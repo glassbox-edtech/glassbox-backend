@@ -136,6 +136,41 @@ export default {
         }
       }
 
+      // ------------------------------------------------------------------
+      // ROUTE: POST /api/admin/block (Admin UI manual blocking)
+      // ------------------------------------------------------------------
+      if (request.method === "POST" && url.pathname === "/api/admin/block") {
+        const authHeader = request.headers.get("Authorization");
+        if (authHeader !== `Bearer ${env.ADMIN_SECRET}`) {
+          return Response.json({ error: "Unauthorized" }, { status: 401, headers: corsHeaders });
+        }
+
+        const { domains } = await request.json();
+
+        if (!Array.isArray(domains) || domains.length === 0) {
+          return Response.json({ error: "Invalid domains list" }, { status: 400, headers: corsHeaders });
+        }
+
+        // 1. Increment server version once for this batch
+        await env.DB.prepare(`UPDATE system_state SET current_version = current_version + 1 WHERE id = 1`).run();
+        const state = await env.DB.prepare(`SELECT current_version FROM system_state WHERE id = 1`).first();
+
+        // 2. Prepare batch inserts for maximum performance
+        const stmts = domains.map(domain => 
+            env.DB.prepare(
+                `INSERT INTO rules (domain, action, version_added) VALUES (?, 'block', ?)`
+            ).bind(domain, state.current_version)
+        );
+
+        // 3. Run all inserts simultaneously
+        await env.DB.batch(stmts);
+
+        // 4. Clear KV Cache so the fleet pulls the new blocks
+        ctx.waitUntil(env.GLASSBOX_KV.delete("master_rules"));
+
+        return Response.json({ success: true, message: `Blocked ${domains.length} domains.` }, { headers: corsHeaders });
+      }
+
       // 404 Route
       return new Response("Not Found", { status: 404, headers: corsHeaders });
 
