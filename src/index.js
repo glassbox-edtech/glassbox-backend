@@ -113,6 +113,9 @@ export default {
         const { requestId, action, domain } = await request.json();
 
         if (action === "approve") {
+          // Force lowercase to prevent case-sensitive ghost rules
+          const cleanDomain = domain.toLowerCase();
+
           // Step 1: Mark request as approved
           await env.DB.prepare(`UPDATE unblock_requests SET status = 'approved' WHERE id = ?`).bind(requestId).run();
           
@@ -120,15 +123,20 @@ export default {
           await env.DB.prepare(`UPDATE system_state SET current_version = current_version + 1 WHERE id = 1`).run();
           const state = await env.DB.prepare(`SELECT current_version FROM system_state WHERE id = 1`).first();
           
-          // Step 3: Insert the new rule to unblock the domain
+          // Step 3: Deactivate any existing rules for this domain
+          await env.DB.prepare(
+            `UPDATE rules SET is_active = 0, version_removed = ? WHERE domain = ? AND is_active = 1`
+          ).bind(state.current_version, cleanDomain).run();
+
+          // Step 4: Insert the new rule to unblock the domain
           await env.DB.prepare(
             `INSERT INTO rules (domain, action, version_added) VALUES (?, 'allow', ?)`
-          ).bind(domain, state.current_version).run();
+          ).bind(cleanDomain, state.current_version).run();
 
-          // Step 4: Clear KV Cache so the next full sync generates fresh data
+          // Step 5: Clear KV Cache
           ctx.waitUntil(env.GLASSBOX_KV.delete("master_rules"));
 
-          return Response.json({ success: true, message: `Domain ${domain} allowed. Rule version bumped to ${state.current_version}.` }, { headers: corsHeaders });
+          return Response.json({ success: true, message: `Domain ${cleanDomain} allowed.` }, { headers: corsHeaders });
         } else {
           // Just deny it
           await env.DB.prepare(`UPDATE unblock_requests SET status = 'denied' WHERE id = ?`).bind(requestId).run();
@@ -151,24 +159,34 @@ export default {
           return Response.json({ error: "Invalid domains list" }, { status: 400, headers: corsHeaders });
         }
 
-        // 1. Increment server version once for this batch
+        // Force lowercase on the entire array to prevent case-sensitive ghost rules
+        const cleanDomains = domains.map(d => d.toLowerCase());
+
+        // 1. Increment server version
         await env.DB.prepare(`UPDATE system_state SET current_version = current_version + 1 WHERE id = 1`).run();
         const state = await env.DB.prepare(`SELECT current_version FROM system_state WHERE id = 1`).first();
 
-        // 2. Prepare batch inserts for maximum performance
-        const stmts = domains.map(domain => 
+        // 2. Prepare statements to deactivate old rules for these domains
+        const retireStmts = cleanDomains.map(d => 
             env.DB.prepare(
-                `INSERT INTO rules (domain, action, version_added) VALUES (?, 'block', ?)`
-            ).bind(domain, state.current_version)
+                `UPDATE rules SET is_active = 0, version_removed = ? WHERE domain = ? AND is_active = 1`
+            ).bind(state.current_version, d)
         );
 
-        // 3. Run all inserts simultaneously
-        await env.DB.batch(stmts);
+        // 3. Prepare batch inserts for the new block rules
+        const insertStmts = cleanDomains.map(d => 
+            env.DB.prepare(
+                `INSERT INTO rules (domain, action, version_added) VALUES (?, 'block', ?)`
+            ).bind(d, state.current_version)
+        );
 
-        // 4. Clear KV Cache so the fleet pulls the new blocks
+        // 4. Run all retirements AND insertions simultaneously
+        await env.DB.batch([...retireStmts, ...insertStmts]);
+
+        // 5. Clear KV Cache
         ctx.waitUntil(env.GLASSBOX_KV.delete("master_rules"));
 
-        return Response.json({ success: true, message: `Blocked ${domains.length} domains.` }, { headers: corsHeaders });
+        return Response.json({ success: true, message: `Blocked ${cleanDomains.length} domains.` }, { headers: corsHeaders });
       }
 
       // 404 Route
