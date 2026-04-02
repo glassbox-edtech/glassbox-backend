@@ -120,15 +120,20 @@ export default {
           await env.DB.prepare(`UPDATE system_state SET current_version = current_version + 1 WHERE id = 1`).run();
           const state = await env.DB.prepare(`SELECT current_version FROM system_state WHERE id = 1`).first();
           
-          // Step 3: Insert the new rule to unblock the domain
+          // Step 3 (NEW): Deactivate any existing rules for this domain!
+          await env.DB.prepare(
+            `UPDATE rules SET is_active = 0, version_removed = ? WHERE domain = ? AND is_active = 1`
+          ).bind(state.current_version, domain).run();
+
+          // Step 4: Insert the new rule to unblock the domain
           await env.DB.prepare(
             `INSERT INTO rules (domain, action, version_added) VALUES (?, 'allow', ?)`
           ).bind(domain, state.current_version).run();
 
-          // Step 4: Clear KV Cache so the next full sync generates fresh data
+          // Step 5: Clear KV Cache
           ctx.waitUntil(env.GLASSBOX_KV.delete("master_rules"));
 
-          return Response.json({ success: true, message: `Domain ${domain} allowed. Rule version bumped to ${state.current_version}.` }, { headers: corsHeaders });
+          return Response.json({ success: true, message: `Domain ${domain} allowed.` }, { headers: corsHeaders });
         } else {
           // Just deny it
           await env.DB.prepare(`UPDATE unblock_requests SET status = 'denied' WHERE id = ?`).bind(requestId).run();
