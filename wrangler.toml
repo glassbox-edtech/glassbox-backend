@@ -5,11 +5,11 @@ compatibility_date = "2026-04-02"
 [[d1_databases]]
 binding = "DB"
 database_name = "glassbox-db"
-database_id = "YOUR_DATABASE_ID_HERE"
+database_id = "3b6516d5-e64b-4d5f-8b79-1d5fb011374a"
 
 [[kv_namespaces]]
 binding = "GLASSBOX_KV"
-id = "YOUR_KV_ID_HERE"
+id = "972c1fbb2a47474b8648a1efd777388e"
 
 [triggers]
 crons = ["*/15 * * * *"]
