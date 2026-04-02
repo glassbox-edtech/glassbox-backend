@@ -1,0 +1,15 @@
+name = "glassbox-backend"
+main = "src/index.js"
+compatibility_date = "2026-04-02"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "glassbox-db"
+database_id = "YOUR_DATABASE_ID_HERE"
+
+[[kv_namespaces]]
+binding = "GLASSBOX_KV"
+id = "YOUR_KV_ID_HERE"
+
+[triggers]
+crons = ["*/15 * * * *"]
