@@ -21,6 +21,17 @@ export default {
         const body = await request.json();
         const { studentHash, url: reqUrl, reason } = body;
 
+        // 🛡️ SECURITY PATCH: Payload Size & Type Validation
+        if (!reqUrl || typeof reqUrl !== 'string' || reqUrl.length > 500) {
+          return Response.json({ error: "URL invalid or too long (max 500 chars)." }, { status: 400, headers: corsHeaders });
+        }
+        if (!reason || typeof reason !== 'string' || reason.length > 1000) {
+          return Response.json({ error: "Reason invalid or too long (max 1000 chars)." }, { status: 400, headers: corsHeaders });
+        }
+        if (!studentHash || typeof studentHash !== 'string' || studentHash.length > 100) {
+          return Response.json({ error: "Invalid identity hash." }, { status: 400, headers: corsHeaders });
+        }
+
         await env.DB.prepare(
           `INSERT INTO unblock_requests (student_hash, url, reason) VALUES (?, ?, ?)`
         ).bind(studentHash, reqUrl, reason).run();
