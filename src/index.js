@@ -21,6 +21,17 @@ export default {
         const body = await request.json();
         const { studentHash, url: reqUrl, reason } = body;
 
+        // 🛡️ SECURITY PATCH: Payload Size & Type Validation
+        if (!reqUrl || typeof reqUrl !== 'string' || reqUrl.length > 500) {
+          return Response.json({ error: "URL invalid or too long (max 500 chars)." }, { status: 400, headers: corsHeaders });
+        }
+        if (!reason || typeof reason !== 'string' || reason.length > 1000) {
+          return Response.json({ error: "Reason invalid or too long (max 1000 chars)." }, { status: 400, headers: corsHeaders });
+        }
+        if (!studentHash || typeof studentHash !== 'string' || studentHash.length > 100) {
+          return Response.json({ error: "Invalid identity hash." }, { status: 400, headers: corsHeaders });
+        }
+
         await env.DB.prepare(
           `INSERT INTO unblock_requests (student_hash, url, reason) VALUES (?, ?, ?)`
         ).bind(studentHash, reqUrl, reason).run();
@@ -49,8 +60,9 @@ export default {
         }
 
         // Condition 3: Delta Update (SQL handles the heavy lifting!)
+        // 🔄 SCHEMA UPDATE: Now pulls 'target' and 'match_type' instead of 'domain'
         const { results } = await env.DB.prepare(
-          `SELECT id, domain, action, is_active FROM rules WHERE version_added > ? OR version_removed > ?`
+          `SELECT id, target, match_type, action, is_active FROM rules WHERE version_added > ? OR version_removed > ?`
         ).bind(clientVersion, clientVersion).all();
 
         const added = results.filter(r => r.is_active === 1);
@@ -74,7 +86,8 @@ export default {
         if (!fullState) {
           // If KV is empty, build it directly from D1
           const state = await env.DB.prepare(`SELECT current_version FROM system_state WHERE id = 1`).first();
-          const { results } = await env.DB.prepare(`SELECT id, domain, action FROM rules WHERE is_active = 1`).all();
+          // 🔄 SCHEMA UPDATE: Now pulls 'target' and 'match_type'
+          const { results } = await env.DB.prepare(`SELECT id, target, match_type, action FROM rules WHERE is_active = 1`).all();
           
           fullState = { version: state.current_version, rules: results };
           
@@ -110,11 +123,16 @@ export default {
           return Response.json({ error: "Unauthorized" }, { status: 401, headers: corsHeaders });
         }
 
-        const { requestId, action, domain } = await request.json();
+        const body = await request.json();
+        const { requestId, action } = body;
+        
+        // 🔄 Backwards compatibility: Accept 'domain' or 'target', default matchType to 'domain'
+        const rawTarget = body.target || body.domain;
+        const matchType = body.matchType || 'domain';
 
         if (action === "approve") {
           // Force lowercase to prevent case-sensitive ghost rules
-          const cleanDomain = domain.toLowerCase();
+          const cleanTarget = rawTarget.toLowerCase();
 
           // Step 1: Mark request as approved
           await env.DB.prepare(`UPDATE unblock_requests SET status = 'approved' WHERE id = ?`).bind(requestId).run();
@@ -123,20 +141,20 @@ export default {
           await env.DB.prepare(`UPDATE system_state SET current_version = current_version + 1 WHERE id = 1`).run();
           const state = await env.DB.prepare(`SELECT current_version FROM system_state WHERE id = 1`).first();
           
-          // Step 3: Deactivate any existing rules for this domain
+          // Step 3: Deactivate any existing rules for this exact target
           await env.DB.prepare(
-            `UPDATE rules SET is_active = 0, version_removed = ? WHERE domain = ? AND is_active = 1`
-          ).bind(state.current_version, cleanDomain).run();
+            `UPDATE rules SET is_active = 0, version_removed = ? WHERE target = ? AND is_active = 1`
+          ).bind(state.current_version, cleanTarget).run();
 
-          // Step 4: Insert the new rule to unblock the domain
+          // Step 4: Insert the new rule with match_type
           await env.DB.prepare(
-            `INSERT INTO rules (domain, action, version_added) VALUES (?, 'allow', ?)`
-          ).bind(cleanDomain, state.current_version).run();
+            `INSERT INTO rules (target, match_type, action, version_added) VALUES (?, ?, 'allow', ?)`
+          ).bind(cleanTarget, matchType, state.current_version).run();
 
           // Step 5: Clear KV Cache
           ctx.waitUntil(env.GLASSBOX_KV.delete("master_rules"));
 
-          return Response.json({ success: true, message: `Domain ${cleanDomain} allowed.` }, { headers: corsHeaders });
+          return Response.json({ success: true, message: `Target ${cleanTarget} allowed.` }, { headers: corsHeaders });
         } else {
           // Just deny it
           await env.DB.prepare(`UPDATE unblock_requests SET status = 'denied' WHERE id = ?`).bind(requestId).run();
@@ -153,31 +171,38 @@ export default {
           return Response.json({ error: "Unauthorized" }, { status: 401, headers: corsHeaders });
         }
 
-        const { domains } = await request.json();
+        const body = await request.json();
+        let blocksToProcess = [];
 
-        if (!Array.isArray(domains) || domains.length === 0) {
-          return Response.json({ error: "Invalid domains list" }, { status: 400, headers: corsHeaders });
+        // 🔄 Format bridging: Support legacy string arrays OR the new object format
+        if (Array.isArray(body.domains)) {
+          blocksToProcess = body.domains.map(d => ({ target: d.toLowerCase(), matchType: 'domain' }));
+        } else if (Array.isArray(body.blocks)) {
+          blocksToProcess = body.blocks.map(b => ({ target: b.target.toLowerCase(), matchType: b.matchType || 'domain' }));
+        } else {
+          return Response.json({ error: "Invalid payload format" }, { status: 400, headers: corsHeaders });
         }
 
-        // Force lowercase on the entire array to prevent case-sensitive ghost rules
-        const cleanDomains = domains.map(d => d.toLowerCase());
+        if (blocksToProcess.length === 0) {
+          return Response.json({ error: "Empty blocks list" }, { status: 400, headers: corsHeaders });
+        }
 
         // 1. Increment server version
         await env.DB.prepare(`UPDATE system_state SET current_version = current_version + 1 WHERE id = 1`).run();
         const state = await env.DB.prepare(`SELECT current_version FROM system_state WHERE id = 1`).first();
 
-        // 2. Prepare statements to deactivate old rules for these domains
-        const retireStmts = cleanDomains.map(d => 
+        // 2. Prepare statements to deactivate old rules for these targets
+        const retireStmts = blocksToProcess.map(b => 
             env.DB.prepare(
-                `UPDATE rules SET is_active = 0, version_removed = ? WHERE domain = ? AND is_active = 1`
-            ).bind(state.current_version, d)
+                `UPDATE rules SET is_active = 0, version_removed = ? WHERE target = ? AND is_active = 1`
+            ).bind(state.current_version, b.target)
         );
 
-        // 3. Prepare batch inserts for the new block rules
-        const insertStmts = cleanDomains.map(d => 
+        // 3. Prepare batch inserts for the new rules with match_type
+        const insertStmts = blocksToProcess.map(b => 
             env.DB.prepare(
-                `INSERT INTO rules (domain, action, version_added) VALUES (?, 'block', ?)`
-            ).bind(d, state.current_version)
+                `INSERT INTO rules (target, match_type, action, version_added) VALUES (?, ?, 'block', ?)`
+            ).bind(b.target, b.matchType, state.current_version)
         );
 
         // 4. Run all retirements AND insertions simultaneously
@@ -186,7 +211,7 @@ export default {
         // 5. Clear KV Cache
         ctx.waitUntil(env.GLASSBOX_KV.delete("master_rules"));
 
-        return Response.json({ success: true, message: `Blocked ${cleanDomains.length} domains.` }, { headers: corsHeaders });
+        return Response.json({ success: true, message: `Blocked ${blocksToProcess.length} targets.` }, { headers: corsHeaders });
       }
 
       // 404 Route
@@ -206,7 +231,8 @@ export default {
     try {
       // 1. Get the absolute latest data from D1
       const state = await env.DB.prepare(`SELECT current_version FROM system_state WHERE id = 1`).first();
-      const { results } = await env.DB.prepare(`SELECT id, domain, action FROM rules WHERE is_active = 1`).all();
+      // 🔄 SCHEMA UPDATE: Now pulls 'target' and 'match_type'
+      const { results } = await env.DB.prepare(`SELECT id, target, match_type, action FROM rules WHERE is_active = 1`).all();
       
       const fullState = { version: state.current_version, rules: results };
       

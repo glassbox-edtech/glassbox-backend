@@ -7,11 +7,12 @@ CREATE TABLE IF NOT EXISTS system_state (
 -- The Master Rule Table
 CREATE TABLE IF NOT EXISTS rules (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    domain TEXT NOT NULL,
-    action TEXT NOT NULL,          -- 'block' or 'allow'
+    target TEXT NOT NULL,              -- The URL, domain, or path being blocked/allowed
+    match_type TEXT DEFAULT 'domain',  -- 'domain' (all subdomains), 'host' (exact subdomain), or 'path'
+    action TEXT NOT NULL,              -- 'block' or 'allow'
     version_added INTEGER NOT NULL,
-    version_removed INTEGER,       -- NULL if currently active
-    is_active BOOLEAN DEFAULT 1    -- 1 for active, 0 for removed
+    version_removed INTEGER,           -- NULL if currently active
+    is_active BOOLEAN DEFAULT 1        -- 1 for active, 0 for removed
 );
 
 -- Unblock Requests from Students
