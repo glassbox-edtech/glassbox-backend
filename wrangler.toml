@@ -21,3 +21,4 @@ invocation_logs = false
 
 [[analytics_engine_datasets]]
 binding = "GLASSBOX_LOGS"
+dataset = "glassbox_logs"
