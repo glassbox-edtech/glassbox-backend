@@ -18,3 +18,6 @@ crons = ["*/15 * * * *"]
 [observability.logs]
 enabled = true
 invocation_logs = false
+
+[[analytics_engine_datasets]]
+binding = "GLASSBOX_LOGS"
