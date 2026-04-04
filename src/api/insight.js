@@ -157,6 +157,56 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
     }
 
     // ---------------------------------------------------------
+    // ROUTE: GET /api/admin/insight/traffic (Live URL Hit Data)
+    // ---------------------------------------------------------
+    if (request.method === "GET" && url.pathname === "/api/admin/insight/traffic") {
+        try {
+            if (!env.CF_ACCOUNT_ID || !env.CF_API_TOKEN) {
+                return jsonError("Cloudflare API credentials not configured on Worker.", 500);
+            }
+
+            const timeframe = url.searchParams.get("timeframe") || "7"; // Default to 7 days for live traffic
+            const limit = parseInt(url.searchParams.get("limit")) || 100;
+
+            // Querying hit_logs. blob3 = target url, blob4 = status, double1 = hit counts
+            let query = `SELECT blob3 AS target, blob4 AS status, SUM(double1) AS hits FROM glassbox_logs WHERE blob1 = 'hit_log'`;
+
+            if (timeframe !== "all") {
+                const days = parseInt(timeframe) || 7;
+                query += ` AND timestamp >= NOW() - INTERVAL '${days}' DAY`;
+            }
+
+            query += ` GROUP BY blob3, blob4 ORDER BY hits DESC LIMIT ${limit}`;
+
+            const cfApiUrl = `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/analytics_engine/sql`;
+            const cfResponse = await fetch(cfApiUrl, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${env.CF_API_TOKEN}`,
+                    'Content-Type': 'application/x-sql'
+                },
+                body: query
+            });
+
+            const data = await cfResponse.json();
+
+            if (!cfResponse.ok || !data.success) {
+                console.error("Analytics Engine Query Error (Traffic):", data.errors);
+                throw new Error(data.errors?.[0]?.message || "Failed to query Analytics Engine.");
+            }
+
+            if (!data.data || data.data.length === 0) {
+                return Response.json({ traffic: [] }, { headers: corsHeaders });
+            }
+
+            return Response.json({ traffic: data.data }, { headers: corsHeaders });
+        } catch (err) {
+            console.error("Admin Insight Traffic Error:", err);
+            return jsonError("Failed to load live traffic data", 500);
+        }
+    }
+
+    // ---------------------------------------------------------
     // ROUTE: GET /api/admin/insight/apps (List Approved Apps)
     // ---------------------------------------------------------
     if (request.method === "GET" && url.pathname === "/api/admin/insight/apps") {
