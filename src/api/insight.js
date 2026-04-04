@@ -152,7 +152,8 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
             return Response.json({ reports: reports }, { headers: corsHeaders });
         } catch (err) {
             console.error("Admin Insight Report Error:", err);
-            return jsonError("Failed to generate insight reports", 500);
+            // Temporarily expose the real error string to the browser!
+            return jsonError(`DEBUG: ${err.message}`, 500);
         }
     }
 
@@ -202,7 +203,8 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
             return Response.json({ traffic: data.data }, { headers: corsHeaders });
         } catch (err) {
             console.error("Admin Insight Traffic Error:", err);
-            return jsonError("Failed to load live traffic data", 500);
+            // Temporarily expose the real error string to the browser!
+            return jsonError(`DEBUG: ${err.message}`, 500);
         }
     }
 
