@@ -179,22 +179,26 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
 
             query += ` GROUP BY blob3, blob4 ORDER BY hits DESC LIMIT ${limit}`;
 
-            const cfApiUrl = `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/analytics_engine/sql`;
+            // Execute the query against the Cloudflare API
+            const cfApiUrl = `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID.trim()}/analytics_engine/sql`;
             const cfResponse = await fetch(cfApiUrl, {
                 method: 'POST',
                 headers: {
-                    'Authorization': `Bearer ${env.CF_API_TOKEN}`,
+                    'Authorization': `Bearer ${env.CF_API_TOKEN.trim()}`,
                     'Content-Type': 'application/x-sql'
                 },
                 body: query
             });
 
-            const data = await cfResponse.json();
-
-            if (!cfResponse.ok || !data.success) {
-                console.error("Analytics Engine Query Error (Traffic):", data.errors);
-                throw new Error(data.errors?.[0]?.message || "Failed to query Analytics Engine.");
+            // FOOLPROOF DEBUG: Read the raw text first instead of assuming JSON
+            const rawText = await cfResponse.text();
+            
+            if (!cfResponse.ok) {
+                // This will spit the exact raw Cloudflare error to your dashboard!
+                throw new Error(`HTTP ${cfResponse.status} - CF RAW: ${rawText}`);
             }
+
+            const data = JSON.parse(rawText);
 
             if (!data.data || data.data.length === 0) {
                 return Response.json({ traffic: [] }, { headers: corsHeaders });
