@@ -82,12 +82,13 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
             const minMinutes = parseFloat(url.searchParams.get("minMinutes")) || 0;
             const maxMinutes = parseFloat(url.searchParams.get("maxMinutes")) || null;
 
+            // Using lowercase dataset name as defined in wrangler.toml
             let query = `SELECT blob3 AS target, SUM(double1) AS total_minutes FROM glassbox_logs WHERE blob1 = 'time_log'`;
 
             if (timeframe !== "all") {
                 const days = parseInt(timeframe) || 30;
-                // FIX: Removed single quotes around the days variable for ClickHouse SQL compatibility
-                query += ` AND timestamp >= NOW() - INTERVAL ${days} DAY`;
+                // Single quotes retained for ClickHouse SQL
+                query += ` AND timestamp >= NOW() - INTERVAL '${days}' DAY`;
             }
 
             if (studentHash) {
@@ -113,7 +114,6 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
                 body: query
             });
 
-            // Fallback for reading raw error text from Cloudflare if it fails
             const rawText = await cfResponse.text();
 
             if (!cfResponse.ok) {
@@ -138,7 +138,6 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
             return Response.json({ reports: reports }, { headers: corsHeaders });
         } catch (err) {
             console.error("Admin Insight Report Error:", err);
-            // FIX: Now exposes the exact error message to the frontend!
             return jsonError(`Report Error: ${err.message}`, 500);
         }
     }
@@ -155,12 +154,13 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
             const timeframe = url.searchParams.get("timeframe") || "7";
             const limit = parseInt(url.searchParams.get("limit")) || 100;
 
+            // Using lowercase dataset name as defined in wrangler.toml
             let query = `SELECT blob3 AS target, blob4 AS status, SUM(double1) AS hits FROM glassbox_logs WHERE blob1 = 'hit_log'`;
 
             if (timeframe !== "all") {
                 const days = parseInt(timeframe) || 7;
-                // FIX: Removed single quotes around the days variable
-                query += ` AND timestamp >= NOW() - INTERVAL ${days} DAY`;
+                // Single quotes retained for ClickHouse SQL
+                query += ` AND timestamp >= NOW() - INTERVAL '${days}' DAY`;
             }
 
             query += ` GROUP BY blob3, blob4 ORDER BY hits DESC LIMIT ${limit}`;
@@ -175,7 +175,6 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
                 body: query
             });
 
-            // Fallback for reading raw error text from Cloudflare if it fails
             const rawText = await cfResponse.text();
 
             if (!cfResponse.ok) {
@@ -195,7 +194,6 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
             return Response.json({ traffic: data.data }, { headers: corsHeaders });
         } catch (err) {
             console.error("Admin Insight Traffic Error:", err);
-            // FIX: Exposes the exact error message!
             return jsonError(`Traffic Error: ${err.message}`, 500);
         }
     }
