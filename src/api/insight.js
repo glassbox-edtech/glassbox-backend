@@ -123,7 +123,8 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
             const data = JSON.parse(rawText);
 
             if (!data.success) {
-                throw new Error(data.errors?.[0]?.message || "Cloudflare API returned success: false");
+                // EXPOSE THE RAW JSON ERROR FROM CLOUDFLARE
+                throw new Error(JSON.stringify(data));
             }
 
             if (!data.data || data.data.length === 0) {
@@ -184,7 +185,8 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
             const data = JSON.parse(rawText);
 
             if (!data.success) {
-                throw new Error(data.errors?.[0]?.message || "Cloudflare API returned success: false");
+                // EXPOSE THE RAW JSON ERROR FROM CLOUDFLARE
+                throw new Error(JSON.stringify(data));
             }
 
             if (!data.data || data.data.length === 0) {
