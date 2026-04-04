@@ -69,6 +69,7 @@ export async function handleInsightRequest(request, env, url) {
 
     return null;
 }
+
 // ------------------------------------------------------------------
 // 🏛️ ADMIN-FACING INSIGHT ROUTES (Auth Handled by admin.js)
 // ------------------------------------------------------------------
@@ -86,6 +87,7 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
             const maxMinutes = parseFloat(url.searchParams.get("maxMinutes")) || null;
 
             // Start building the dynamic SQL query
+            // ⚠️ ARCHITECTURE NOTE: This will be refactored to query Cloudflare Analytics Engine GraphQL API
             let query = `SELECT target, SUM(minutes_spent) as total_minutes FROM insight_logs WHERE 1=1`;
             const bindParams = [];
 
