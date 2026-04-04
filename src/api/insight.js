@@ -93,7 +93,7 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
 
             // 🚀 Querying Cloudflare Analytics Engine via the SQL API
             // blob1 = logType, blob2 = studentHash, blob3 = target, blob4 = isApprovedStr, double1 = value
-            let query = `SELECT blob3 AS target, SUM(double1) AS total_minutes FROM GLASSBOX_LOGS WHERE blob1 = 'time_log'`;
+            let query = `SELECT blob3 AS target, SUM(double1) AS total_minutes FROM glassbox_logs WHERE blob1 = 'time_log'`;
 
             // Filter by Date
             if (timeframe !== "all") {
