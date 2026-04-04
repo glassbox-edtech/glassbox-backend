@@ -79,6 +79,11 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
     // ---------------------------------------------------------
     if (request.method === "GET" && url.pathname === "/api/admin/insight/reports") {
         try {
+            // ⚠️ SECURITY CHECK: Ensure Cloudflare API credentials exist
+            if (!env.CF_ACCOUNT_ID || !env.CF_API_TOKEN) {
+                return jsonError("Cloudflare API credentials not configured on Worker.", 500);
+            }
+
             // Extract filtering parameters from the URL
             const timeframe = url.searchParams.get("timeframe") || "30"; // Days, defaults to 30
             const studentHash = url.searchParams.get("studentHash") || null;
@@ -86,48 +91,60 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
             const minMinutes = parseFloat(url.searchParams.get("minMinutes")) || 0;
             const maxMinutes = parseFloat(url.searchParams.get("maxMinutes")) || null;
 
-            // Start building the dynamic SQL query
-            // ⚠️ ARCHITECTURE NOTE: This will be refactored to query Cloudflare Analytics Engine GraphQL API
-            let query = `SELECT target, SUM(minutes_spent) as total_minutes FROM insight_logs WHERE 1=1`;
-            const bindParams = [];
+            // 🚀 Querying Cloudflare Analytics Engine via the SQL API
+            // blob1 = logType, blob2 = studentHash, blob3 = target, blob4 = isApprovedStr, double1 = value
+            let query = `SELECT blob3 AS target, SUM(double1) AS total_minutes FROM GLASSBOX_LOGS WHERE blob1 = 'time_log'`;
 
             // Filter by Date
             if (timeframe !== "all") {
                 const days = parseInt(timeframe) || 30;
-                query += ` AND log_date >= date('now', ?)`;
-                bindParams.push(`-${days} days`);
+                query += ` AND timestamp >= NOW() - INTERVAL '${days}' DAY`;
             }
 
             // Filter by Student Hash
             if (studentHash) {
-                query += ` AND student_hash = ?`;
-                bindParams.push(studentHash);
+                // Ensure no SQL injection via hash format (alphanumeric check)
+                const cleanHash = studentHash.replace(/[^a-fA-F0-9]/g, '');
+                query += ` AND blob2 = '${cleanHash}'`;
             }
 
             // Group by the app/domain
-            query += ` GROUP BY target HAVING total_minutes >= ?`;
-            bindParams.push(minMinutes);
+            query += ` GROUP BY blob3 HAVING total_minutes >= ${minMinutes}`;
 
             // Filter by max time (if provided)
             if (maxMinutes !== null) {
-                query += ` AND total_minutes <= ?`;
-                bindParams.push(maxMinutes);
+                query += ` AND total_minutes <= ${maxMinutes}`;
             }
 
             // Finish the query by ordering and limiting
-            query += ` ORDER BY total_minutes DESC LIMIT ?`;
-            bindParams.push(limit);
+            query += ` ORDER BY total_minutes DESC LIMIT ${limit}`;
 
-            // Execute the dynamic query
-            const { results } = await env.DB.prepare(query).bind(...bindParams).all();
+            // Execute the query against the Cloudflare API
+            const cfApiUrl = `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/analytics_engine/sql`;
+            const cfResponse = await fetch(cfApiUrl, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${env.CF_API_TOKEN}`,
+                    'Content-Type': 'application/x-sql'
+                },
+                body: query
+            });
+
+            const data = await cfResponse.json();
+
+            // Check if the Cloudflare API request was successful
+            if (!cfResponse.ok || !data.success) {
+                console.error("Analytics Engine Query Error:", data.errors);
+                throw new Error(data.errors?.[0]?.message || "Failed to query Analytics Engine.");
+            }
 
             // Check if we actually have data
-            if (!results || results.length === 0) {
+            if (!data.data || data.data.length === 0) {
                 return Response.json({ message: "No analytics data matched these filters." }, { headers: corsHeaders });
             }
 
             // Format it nicely for the chart (round to 1 decimal place)
-            const reports = results.map(row => ({
+            const reports = data.data.map(row => ({
                 target: row.target,
                 total_minutes: Math.round(row.total_minutes * 10) / 10
             }));
