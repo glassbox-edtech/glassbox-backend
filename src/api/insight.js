@@ -122,10 +122,7 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
 
             const data = JSON.parse(rawText);
 
-            if (!data.success) {
-                // EXPOSE THE RAW JSON ERROR FROM CLOUDFLARE
-                throw new Error(JSON.stringify(data));
-            }
+            // Removed the strict `data.success` check because Cloudflare Analytics API doesn't use it!
 
             if (!data.data || data.data.length === 0) {
                 return Response.json({ reports: [] }, { headers: corsHeaders });
@@ -184,10 +181,7 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
 
             const data = JSON.parse(rawText);
 
-            if (!data.success) {
-                // EXPOSE THE RAW JSON ERROR FROM CLOUDFLARE
-                throw new Error(JSON.stringify(data));
-            }
+            // Removed the strict `data.success` check here as well!
 
             if (!data.data || data.data.length === 0) {
                 return Response.json({ traffic: [] }, { headers: corsHeaders });
