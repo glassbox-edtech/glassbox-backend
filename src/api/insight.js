@@ -86,7 +86,8 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
 
             if (timeframe !== "all") {
                 const days = parseInt(timeframe) || 30;
-                query += ` AND timestamp >= NOW() - INTERVAL '${days}' DAY`;
+                // FIX: Removed single quotes around the days variable for ClickHouse SQL compatibility
+                query += ` AND timestamp >= NOW() - INTERVAL ${days} DAY`;
             }
 
             if (studentHash) {
@@ -102,7 +103,6 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
 
             query += ` ORDER BY total_minutes DESC LIMIT ${limit}`;
 
-            // .trim() added to protect against whitespace in secrets!
             const cfApiUrl = `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID.trim()}/analytics_engine/sql`;
             const cfResponse = await fetch(cfApiUrl, {
                 method: 'POST',
@@ -113,11 +113,17 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
                 body: query
             });
 
-            const data = await cfResponse.json();
+            // Fallback for reading raw error text from Cloudflare if it fails
+            const rawText = await cfResponse.text();
 
-            if (!cfResponse.ok || !data.success) {
-                console.error("Analytics Engine Query Error:", data.errors);
-                throw new Error(data.errors?.[0]?.message || "Failed to query Analytics Engine.");
+            if (!cfResponse.ok) {
+                throw new Error(`HTTP ${cfResponse.status}: ${rawText}`);
+            }
+
+            const data = JSON.parse(rawText);
+
+            if (!data.success) {
+                throw new Error(data.errors?.[0]?.message || "Cloudflare API returned success: false");
             }
 
             if (!data.data || data.data.length === 0) {
@@ -132,7 +138,8 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
             return Response.json({ reports: reports }, { headers: corsHeaders });
         } catch (err) {
             console.error("Admin Insight Report Error:", err);
-            return jsonError("Failed to generate insight reports", 500);
+            // FIX: Now exposes the exact error message to the frontend!
+            return jsonError(`Report Error: ${err.message}`, 500);
         }
     }
 
@@ -152,12 +159,12 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
 
             if (timeframe !== "all") {
                 const days = parseInt(timeframe) || 7;
-                query += ` AND timestamp >= NOW() - INTERVAL '${days}' DAY`;
+                // FIX: Removed single quotes around the days variable
+                query += ` AND timestamp >= NOW() - INTERVAL ${days} DAY`;
             }
 
             query += ` GROUP BY blob3, blob4 ORDER BY hits DESC LIMIT ${limit}`;
 
-            // .trim() added here as well
             const cfApiUrl = `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID.trim()}/analytics_engine/sql`;
             const cfResponse = await fetch(cfApiUrl, {
                 method: 'POST',
@@ -168,11 +175,17 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
                 body: query
             });
 
-            const data = await cfResponse.json();
+            // Fallback for reading raw error text from Cloudflare if it fails
+            const rawText = await cfResponse.text();
 
-            if (!cfResponse.ok || !data.success) {
-                console.error("Analytics Engine Query Error (Traffic):", data.errors);
-                throw new Error(data.errors?.[0]?.message || "Failed to query Analytics Engine.");
+            if (!cfResponse.ok) {
+                throw new Error(`HTTP ${cfResponse.status}: ${rawText}`);
+            }
+
+            const data = JSON.parse(rawText);
+
+            if (!data.success) {
+                throw new Error(data.errors?.[0]?.message || "Cloudflare API returned success: false");
             }
 
             if (!data.data || data.data.length === 0) {
@@ -182,7 +195,8 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
             return Response.json({ traffic: data.data }, { headers: corsHeaders });
         } catch (err) {
             console.error("Admin Insight Traffic Error:", err);
-            return jsonError("Failed to load live traffic data", 500);
+            // FIX: Exposes the exact error message!
+            return jsonError(`Traffic Error: ${err.message}`, 500);
         }
     }
 
