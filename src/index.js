@@ -4,7 +4,6 @@ import { handleApiRequest } from './api.js';
 
 export default {
     async fetch(request, env, ctx) {
-        // Handle CORS preflight requests globally
         if (request.method === "OPTIONS") {
             return new Response(null, { headers: corsHeaders });
         }
@@ -12,15 +11,11 @@ export default {
         const url = new URL(request.url);
 
         try {
-            // ---------------------------------------------------------
-            // 🌐 MASTER API ROUTER
-            // ---------------------------------------------------------
             if (url.pathname.startsWith("/api/")) {
                 const response = await handleApiRequest(request, env, ctx, url);
                 if (response) return response;
             }
 
-            // 404 Fallback for anything that didn't match the API routes
             return new Response("Not Found", { status: 404, headers: corsHeaders });
 
         } catch (err) {
@@ -32,13 +27,9 @@ export default {
         }
     },
 
-    // ------------------------------------------------------------------
-    // ⏱️ CRON JOB: The "Traffic Cop" Event Router
-    // ------------------------------------------------------------------
     async scheduled(event, env, ctx) {
         console.log(`Cron triggered for interval: ${event.cron}`);
 
-        // 🧹 1. THE 15-MINUTE JOB: Routine Cache & Rule Cleanup
         if (event.cron === "*/15 * * * *") {
             await rebuildMasterRulesCache(env, ctx);
 
@@ -58,8 +49,6 @@ export default {
                 console.error("❌ Cleanup failed:", err);
             }
         }
-        
-        // 📊 2. THE HOURLY JOB: The Intelligent "Tick-Tock" Rollup
         else if (event.cron === "0 * * * *") {
             const timezone = env.SCHOOL_TIMEZONE || "UTC";
             
@@ -81,9 +70,6 @@ export default {
     }
 };
 
-// ==============================================================================
-// 📈 THE ROLLUP PIPELINE (Analytics Engine -> D1)
-// ==============================================================================
 async function runMidnightRollup(env) {
     try {
         if (!env.CF_ACCOUNT_ID || !env.CF_API_TOKEN) {
@@ -91,7 +77,6 @@ async function runMidnightRollup(env) {
             return;
         }
 
-        // 1. Query the Analytics Engine (Student Hash removed to prevent cardinality explosion)
         const query = `
             SELECT 
                 blob3 AS target, 
@@ -131,12 +116,12 @@ async function runMidnightRollup(env) {
             year: "numeric", month: "2-digit", day: "2-digit" 
         }).format(new Date(Date.now() - 86400000));
 
-        // 3. Map the results to D1 Insert Statements (No hash)
         const insertStmts = rows.map(row => {
             return env.TELEMETRY_DB.prepare(`
                 INSERT INTO daily_rollups (log_date, target, status, total_minutes, total_hits)
                 VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(log_date, target) 
+                -- 🎯 CRITICAL FIX: Match the new constraint exactly
+                ON CONFLICT(log_date, target, status) 
                 DO UPDATE SET 
                     total_minutes = excluded.total_minutes,
                     total_hits = excluded.total_hits
