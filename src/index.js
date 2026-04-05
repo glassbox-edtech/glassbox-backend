@@ -77,6 +77,8 @@ async function runMidnightRollup(env) {
             return;
         }
 
+        const timezone = env.SCHOOL_TIMEZONE || "UTC";
+
         const query = `
             SELECT 
                 blob3 AS target, 
@@ -84,8 +86,8 @@ async function runMidnightRollup(env) {
                 SUM(if(blob1 = 'time_log', double1, 0)) AS total_minutes, 
                 SUM(if(blob1 = 'hit_log', double1, 0)) AS total_hits 
             FROM glassbox_logs 
-            WHERE timestamp >= toStartOfDay(NOW() - INTERVAL '1' DAY) 
-              AND timestamp < toStartOfDay(NOW()) 
+            WHERE timestamp >= toStartOfDay(NOW() - INTERVAL '1' DAY, '${timezone}') 
+              AND timestamp < toStartOfDay(NOW(), '${timezone}') 
             GROUP BY target, status
         `;
 
