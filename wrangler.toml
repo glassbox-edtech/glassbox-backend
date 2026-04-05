@@ -7,12 +7,17 @@ binding = "DB"
 database_name = "glassbox-db"
 database_id = "3b6516d5-e64b-4d5f-8b79-1d5fb011374a"
 
+[[d1_databases]]
+binding = "TELEMETRY_DB"
+database_name = "glassbox-telemetry"
+database_id = "YOUR-DATABASE-ID-HERE"
+
 [[kv_namespaces]]
 binding = "GLASSBOX_KV"
 id = "972c1fbb2a47474b8648a1efd777388e"
 
 [triggers]
-crons = ["*/15 * * * *"]
+crons = ["*/15 * * * *", "0 * * * *"]
 
 [observability]
 [observability.logs]
