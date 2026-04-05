@@ -10,7 +10,7 @@ database_id = "3b6516d5-e64b-4d5f-8b79-1d5fb011374a"
 [[d1_databases]]
 binding = "TELEMETRY_DB"
 database_name = "glassbox-telemetry"
-database_id = "YOUR-DATABASE-ID-HERE"
+database_id = "3ac73a2f-1a38-4ce1-b73b-6b754939779b"
 
 [[kv_namespaces]]
 binding = "GLASSBOX_KV"
