@@ -69,6 +69,7 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
     const timeframeParam = url.searchParams.get("timeframe") || "7";
     const studentHash = url.searchParams.get("studentHash") || null;
     const limit = parseInt(url.searchParams.get("limit")) || 50;
+    const statusFilter = url.searchParams.get("statusFilter") || "all";
     
     // We only use Warm Storage for macroscopic data (>7 days) AND if there is no specific student selected
     const useWarmStorage = !studentHash && (timeframeParam === "all" || parseInt(timeframeParam) > 7);
@@ -84,10 +85,16 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
             // 🗄️ ATTEMPT A: WARM STORAGE
             if (useWarmStorage && env.TELEMETRY_DB) {
                 let d1Query = `SELECT target, SUM(total_minutes) AS total_minutes FROM daily_rollups WHERE 1=1`;
+                const params = [];
                 
                 if (timeframeParam !== "all") {
                     const days = parseInt(timeframeParam) || 30;
                     d1Query += ` AND log_date >= date('now', '-${days} days')`;
+                }
+
+                if (statusFilter !== "all") {
+                    const cleanStatus = statusFilter === 'approved' ? 'approved' : 'unapproved';
+                    d1Query += ` AND status = '${cleanStatus}'`;
                 }
 
                 d1Query += ` GROUP BY target HAVING total_minutes >= ${minMinutes}`;
@@ -98,6 +105,7 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
 
                 d1Query += ` ORDER BY total_minutes DESC LIMIT ${limit}`;
 
+                // Only pass params array if we actually added any binds (currently empty, but safe)
                 const { results } = await env.TELEMETRY_DB.prepare(d1Query).all();
                 
                 // Only return if D1 actually has data. If it's empty, fall through to Analytics Engine!
@@ -125,6 +133,11 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
             if (studentHash) {
                 const cleanHash = studentHash.replace(/[^a-fA-F0-9]/g, '');
                 query += ` AND blob2 = '${cleanHash}'`;
+            }
+
+            if (statusFilter !== "all") {
+                const cleanStatus = statusFilter === 'approved' ? 'approved' : 'unapproved';
+                query += ` AND blob4 = '${cleanStatus}'`;
             }
 
             query += ` GROUP BY blob3 HAVING total_minutes >= ${minMinutes}`;
@@ -179,6 +192,11 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
                     d1Query += ` AND log_date >= date('now', '-${days} days')`;
                 }
 
+                if (statusFilter !== "all") {
+                    const cleanStatus = statusFilter === 'approved' ? 'approved' : 'unapproved';
+                    d1Query += ` AND status = '${cleanStatus}'`;
+                }
+
                 d1Query += ` GROUP BY target, status ORDER BY hits DESC LIMIT ${limit}`;
 
                 const { results } = await env.TELEMETRY_DB.prepare(d1Query).all();
@@ -201,6 +219,11 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
                 query += ` AND timestamp >= NOW() - INTERVAL '${days}' DAY`;
             }
             
+            if (statusFilter !== "all") {
+                const cleanStatus = statusFilter === 'approved' ? 'approved' : 'unapproved';
+                query += ` AND blob4 = '${cleanStatus}'`;
+            }
+
             // Notice: We don't filter by studentHash here because the live traffic table is meant to be global
 
             query += ` GROUP BY blob3, blob4 ORDER BY hits DESC LIMIT ${limit}`;
