@@ -27,3 +27,16 @@ invocation_logs = false
 [[analytics_engine_datasets]]
 binding = "GLASSBOX_LOGS"
 dataset = "glassbox_logs"
+
+# --- Scheduled Workers (Cron) ---
+[triggers]
+# */15 * * * * : Runs every 15 minutes (Routine Cleanup)
+# 0 * * * * : Runs exactly on the hour, every hour (Timezone-aware Daily Rollup)
+crons = ["*/15 * * * *", "0 * * * *"]
+
+# --- Environment Variables ---
+[vars]
+# Used by the hourly "Tick-Tock" cron to determine when local midnight occurs.
+# Change this to your timezone (e.g., "America/New_York") for your deployment.
+SCHOOL_TIMEZONE = "UTC"
+CF_ACCOUNT_ID = "bdf5769d5b5c59cda39869246f25cc79"
