@@ -67,73 +67,104 @@ export async function handleInsightRequest(request, env, url) {
 // 🏛️ ADMIN-FACING INSIGHT ROUTES (Auth Handled by admin.js)
 // ------------------------------------------------------------------
 export async function handleAdminInsightRequest(request, env, ctx, url) {
+    
+    // Helper variable to determine if we should route to Warm Storage
+    const timeframeParam = url.searchParams.get("timeframe") || "7";
+    const useWarmStorage = timeframeParam === "all" || parseInt(timeframeParam) > 7;
+
     // ---------------------------------------------------------
     // ROUTE: GET /api/admin/insight/reports (Advanced Graphing Data)
     // ---------------------------------------------------------
     if (request.method === "GET" && url.pathname === "/api/admin/insight/reports") {
         try {
-            if (!env.CF_ACCOUNT_ID || !env.CF_API_TOKEN) {
-                return jsonError("Cloudflare API credentials not configured on Worker.", 500);
-            }
-
-            const timeframe = url.searchParams.get("timeframe") || "30"; 
             const studentHash = url.searchParams.get("studentHash") || null;
             const limit = parseInt(url.searchParams.get("limit")) || 50;
             const minMinutes = parseFloat(url.searchParams.get("minMinutes")) || 0;
             const maxMinutes = parseFloat(url.searchParams.get("maxMinutes")) || null;
 
-            // Using lowercase dataset name as defined in wrangler.toml
-            let query = `SELECT blob3 AS target, SUM(double1) AS total_minutes FROM glassbox_logs WHERE blob1 = 'time_log'`;
+            // 🗄️ ROUTE A: WARM STORAGE (D1 Telemetry Rollups)
+            if (useWarmStorage && env.TELEMETRY_DB) {
+                let d1Query = `SELECT target, SUM(total_minutes) AS total_minutes FROM daily_rollups WHERE 1=1`;
+                const params = [];
 
-            if (timeframe !== "all") {
-                const days = parseInt(timeframe) || 30;
-                // Single quotes retained for ClickHouse SQL
-                query += ` AND timestamp >= NOW() - INTERVAL '${days}' DAY`;
+                if (timeframeParam !== "all") {
+                    const days = parseInt(timeframeParam) || 30;
+                    d1Query += ` AND log_date >= date('now', '-${days} days')`;
+                }
+
+                if (studentHash) {
+                    d1Query += ` AND student_hash = ?`;
+                    params.push(studentHash.replace(/[^a-fA-F0-9]/g, ''));
+                }
+
+                d1Query += ` GROUP BY target HAVING total_minutes >= ${minMinutes}`;
+
+                if (maxMinutes !== null) {
+                    d1Query += ` AND total_minutes <= ${maxMinutes}`;
+                }
+
+                d1Query += ` ORDER BY total_minutes DESC LIMIT ${limit}`;
+
+                const { results } = await env.TELEMETRY_DB.prepare(d1Query).bind(...params).all();
+                
+                const reports = results.map(row => ({
+                    target: row.target,
+                    total_minutes: Math.round(row.total_minutes * 10) / 10
+                }));
+
+                return Response.json({ reports: reports }, { headers: corsHeaders });
+            } 
+            
+            // 🔥 ROUTE B: HOT STORAGE (Cloudflare Analytics Engine)
+            else {
+                if (!env.CF_ACCOUNT_ID || !env.CF_API_TOKEN) {
+                    return jsonError("Cloudflare API credentials not configured on Worker.", 500);
+                }
+
+                let query = `SELECT blob3 AS target, SUM(double1) AS total_minutes FROM glassbox_logs WHERE blob1 = 'time_log'`;
+
+                if (timeframeParam !== "all") {
+                    const days = parseInt(timeframeParam) || 7;
+                    query += ` AND timestamp >= NOW() - INTERVAL '${days}' DAY`;
+                }
+
+                if (studentHash) {
+                    const cleanHash = studentHash.replace(/[^a-fA-F0-9]/g, '');
+                    query += ` AND blob2 = '${cleanHash}'`;
+                }
+
+                query += ` GROUP BY blob3 HAVING total_minutes >= ${minMinutes}`;
+
+                if (maxMinutes !== null) {
+                    query += ` AND total_minutes <= ${maxMinutes}`;
+                }
+
+                query += ` ORDER BY total_minutes DESC LIMIT ${limit}`;
+
+                const cfApiUrl = `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID.trim()}/analytics_engine/sql`;
+                const cfResponse = await fetch(cfApiUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${env.CF_API_TOKEN.trim()}`,
+                        'Content-Type': 'application/x-sql'
+                    },
+                    body: query
+                });
+
+                if (!cfResponse.ok) throw new Error(`HTTP ${cfResponse.status}: ${await cfResponse.text()}`);
+                const data = await cfResponse.json();
+
+                if (!data.data || data.data.length === 0) {
+                    return Response.json({ reports: [] }, { headers: corsHeaders });
+                }
+
+                const reports = data.data.map(row => ({
+                    target: row.target,
+                    total_minutes: Math.round(row.total_minutes * 10) / 10
+                }));
+
+                return Response.json({ reports: reports }, { headers: corsHeaders });
             }
-
-            if (studentHash) {
-                const cleanHash = studentHash.replace(/[^a-fA-F0-9]/g, '');
-                query += ` AND blob2 = '${cleanHash}'`;
-            }
-
-            query += ` GROUP BY blob3 HAVING total_minutes >= ${minMinutes}`;
-
-            if (maxMinutes !== null) {
-                query += ` AND total_minutes <= ${maxMinutes}`;
-            }
-
-            query += ` ORDER BY total_minutes DESC LIMIT ${limit}`;
-
-            const cfApiUrl = `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID.trim()}/analytics_engine/sql`;
-            const cfResponse = await fetch(cfApiUrl, {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${env.CF_API_TOKEN.trim()}`,
-                    'Content-Type': 'application/x-sql'
-                },
-                body: query
-            });
-
-            const rawText = await cfResponse.text();
-
-            if (!cfResponse.ok) {
-                throw new Error(`HTTP ${cfResponse.status}: ${rawText}`);
-            }
-
-            const data = JSON.parse(rawText);
-
-            // Removed the strict `data.success` check because Cloudflare Analytics API doesn't use it!
-
-            if (!data.data || data.data.length === 0) {
-                return Response.json({ reports: [] }, { headers: corsHeaders });
-            }
-
-            const reports = data.data.map(row => ({
-                target: row.target,
-                total_minutes: Math.round(row.total_minutes * 10) / 10
-            }));
-
-            return Response.json({ reports: reports }, { headers: corsHeaders });
         } catch (err) {
             console.error("Admin Insight Report Error:", err);
             return jsonError(`Report Error: ${err.message}`, 500);
@@ -145,49 +176,58 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
     // ---------------------------------------------------------
     if (request.method === "GET" && url.pathname === "/api/admin/insight/traffic") {
         try {
-            if (!env.CF_ACCOUNT_ID || !env.CF_API_TOKEN) {
-                return jsonError("Cloudflare API credentials not configured on Worker.", 500);
-            }
-
-            const timeframe = url.searchParams.get("timeframe") || "7";
             const limit = parseInt(url.searchParams.get("limit")) || 100;
 
-            // Using lowercase dataset name as defined in wrangler.toml
-            let query = `SELECT blob3 AS target, blob4 AS status, SUM(double1) AS hits FROM glassbox_logs WHERE blob1 = 'hit_log'`;
+            // 🗄️ ROUTE A: WARM STORAGE (D1 Telemetry Rollups)
+            if (useWarmStorage && env.TELEMETRY_DB) {
+                let d1Query = `SELECT target, status, SUM(total_hits) AS hits FROM daily_rollups WHERE 1=1`;
+                
+                if (timeframeParam !== "all") {
+                    const days = parseInt(timeframeParam) || 30;
+                    d1Query += ` AND log_date >= date('now', '-${days} days')`;
+                }
 
-            if (timeframe !== "all") {
-                const days = parseInt(timeframe) || 7;
-                // Single quotes retained for ClickHouse SQL
-                query += ` AND timestamp >= NOW() - INTERVAL '${days}' DAY`;
+                d1Query += ` GROUP BY target, status ORDER BY hits DESC LIMIT ${limit}`;
+
+                const { results } = await env.TELEMETRY_DB.prepare(d1Query).all();
+                
+                return Response.json({ traffic: results }, { headers: corsHeaders });
             }
+            
+            // 🔥 ROUTE B: HOT STORAGE (Cloudflare Analytics Engine)
+            else {
+                if (!env.CF_ACCOUNT_ID || !env.CF_API_TOKEN) {
+                    return jsonError("Cloudflare API credentials not configured on Worker.", 500);
+                }
 
-            query += ` GROUP BY blob3, blob4 ORDER BY hits DESC LIMIT ${limit}`;
+                let query = `SELECT blob3 AS target, blob4 AS status, SUM(double1) AS hits FROM glassbox_logs WHERE blob1 = 'hit_log'`;
 
-            const cfApiUrl = `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID.trim()}/analytics_engine/sql`;
-            const cfResponse = await fetch(cfApiUrl, {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${env.CF_API_TOKEN.trim()}`,
-                    'Content-Type': 'application/x-sql'
-                },
-                body: query
-            });
+                if (timeframeParam !== "all") {
+                    const days = parseInt(timeframeParam) || 7;
+                    query += ` AND timestamp >= NOW() - INTERVAL '${days}' DAY`;
+                }
 
-            const rawText = await cfResponse.text();
+                query += ` GROUP BY blob3, blob4 ORDER BY hits DESC LIMIT ${limit}`;
 
-            if (!cfResponse.ok) {
-                throw new Error(`HTTP ${cfResponse.status}: ${rawText}`);
+                const cfApiUrl = `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID.trim()}/analytics_engine/sql`;
+                const cfResponse = await fetch(cfApiUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${env.CF_API_TOKEN.trim()}`,
+                        'Content-Type': 'application/x-sql'
+                    },
+                    body: query
+                });
+
+                if (!cfResponse.ok) throw new Error(`HTTP ${cfResponse.status}: ${await cfResponse.text()}`);
+                const data = await cfResponse.json();
+
+                if (!data.data || data.data.length === 0) {
+                    return Response.json({ traffic: [] }, { headers: corsHeaders });
+                }
+
+                return Response.json({ traffic: data.data }, { headers: corsHeaders });
             }
-
-            const data = JSON.parse(rawText);
-
-            // Removed the strict `data.success` check here as well!
-
-            if (!data.data || data.data.length === 0) {
-                return Response.json({ traffic: [] }, { headers: corsHeaders });
-            }
-
-            return Response.json({ traffic: data.data }, { headers: corsHeaders });
         } catch (err) {
             console.error("Admin Insight Traffic Error:", err);
             return jsonError(`Traffic Error: ${err.message}`, 500);
