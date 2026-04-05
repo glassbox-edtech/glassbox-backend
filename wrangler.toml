@@ -16,9 +16,6 @@ database_id = "3ac73a2f-1a38-4ce1-b73b-6b754939779b"
 binding = "GLASSBOX_KV"
 id = "972c1fbb2a47474b8648a1efd777388e"
 
-[triggers]
-crons = ["*/15 * * * *", "0 * * * *"]
-
 [observability]
 [observability.logs]
 enabled = true
