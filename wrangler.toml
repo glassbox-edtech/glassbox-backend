@@ -5,19 +5,16 @@ compatibility_date = "2026-04-02"
 [[d1_databases]]
 binding = "DB"
 database_name = "glassbox-db"
-database_id = "YOUR_DATABASE_ID_HERE"
+database_id = "YOUR_DATABASE_ID_HERE" # UPDATE THIS
 
 [[d1_databases]]
 binding = "TELEMETRY_DB"
 database_name = "glassbox-telemetry"
-database_id = "YOUR-DATABASE-ID-HERE"
+database_id = "YOUR-DATABASE-ID-HERE" # UPDATE THIS
 
 [[kv_namespaces]]
 binding = "GLASSBOX_KV"
-id = "YOUR_KV_ID_HERE"
-
-[triggers]
-crons = ["*/15 * * * *", "0 * * * *"]
+id = "YOUR_KV_ID_HERE" # UPDATE THIS
 
 [observability]
 [observability.logs]
@@ -27,3 +24,16 @@ invocation_logs = false
 [[analytics_engine_datasets]]
 binding = "GLASSBOX_LOGS"
 dataset = "glassbox_logs"
+
+# --- Scheduled Workers (Cron) ---
+[triggers]
+# */15 * * * * : Runs every 15 minutes (Routine Cleanup)
+# 0 * * * * : Runs exactly on the hour, every hour (Timezone-aware Daily Rollup)
+crons = ["*/15 * * * *", "0 * * * *"]
+
+# --- Environment Variables ---
+[vars]
+# Used by the hourly "Tick-Tock" cron to determine when local midnight occurs.
+# Change this to your timezone (e.g., "America/New_York") for your deployment.
+SCHOOL_TIMEZONE = "UTC"
+CF_ACCOUNT_ID = "YOUR_CF_ACCOUNT_ID_HERE"
