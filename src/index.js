@@ -119,7 +119,7 @@ async function runMidnightRollup(env) {
                 blob4 AS status, 
                 SUM(if(blob1 = 'time_log', double1, 0)) AS total_minutes, 
                 SUM(if(blob1 = 'hit_log', double1, 0)) AS total_hits,
-                uniq(blob2) AS unique_students
+                COUNT(DISTINCT blob2) AS unique_students
             FROM glassbox_logs 
             WHERE timestamp >= '${startSql}' 
               AND timestamp < '${endSql}' 

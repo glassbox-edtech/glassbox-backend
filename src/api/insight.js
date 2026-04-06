@@ -122,7 +122,7 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
                 return jsonError("Cloudflare API credentials not configured on Worker.", 500);
             }
 
-            let query = `SELECT blob3 AS target, SUM(double1) AS total_minutes, uniq(blob2) AS unique_students FROM glassbox_logs WHERE blob1 = 'time_log'`;
+            let query = `SELECT blob3 AS target, SUM(double1) AS total_minutes, COUNT(DISTINCT blob2) AS unique_students FROM glassbox_logs WHERE blob1 = 'time_log'`;
 
             if (timeframeParam !== "all") {
                 const days = parseInt(timeframeParam) || 7;
