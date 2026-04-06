@@ -1,5 +1,6 @@
 import { corsHeaders, cacheHeaders, jsonError } from '../utils/helpers.js';
 import { rebuildMasterRulesCache } from '../utils/cache.js';
+import webpush from 'web-push';
 
 // ------------------------------------------------------------------
 // 🎒 STUDENT-FACING FILTER ROUTES (No Auth Required)
@@ -20,9 +21,42 @@ export async function handleFilterRequest(request, env, url) {
             return jsonError("Invalid identity hash.", 400);
         }
 
-        await env.DB.prepare(
-            `INSERT INTO unblock_requests (student_hash, url, reason) VALUES (?, ?, ?)`
-        ).bind(studentHash, reqUrl, reason).run();
+        // Insert the request and grab the newly generated ID
+        const insertResult = await env.DB.prepare(
+            `INSERT INTO unblock_requests (student_hash, url, reason) VALUES (?, ?, ?) RETURNING id`
+        ).bind(studentHash, reqUrl, reason).first();
+
+        const requestId = insertResult ? insertResult.id : null;
+
+        // 🔔 TRIGGER WEB PUSH NOTIFICATIONS
+        if (requestId && env.VAPID_KEYS) {
+            try {
+                // Pre-calculate the match type so the Quick Action button knows how to resolve it
+                let matchType = 'domain';
+                let cleanUrl = reqUrl.replace(/^https?:\/\//, '').replace(/^www\./, '');
+                if (cleanUrl.includes('/') && cleanUrl.split('/')[1] !== '') {
+                    matchType = 'path';
+                }
+
+                const { results: subscriptions } = await env.DB.prepare(`SELECT * FROM admin_push_subscriptions`).all();
+                
+                if (subscriptions && subscriptions.length > 0) {
+                    const payload = JSON.stringify({
+                        requestId: requestId,
+                        url: reqUrl,
+                        reason: reason,
+                        studentHash: studentHash,
+                        matchType: matchType
+                    });
+
+                    // Dispatch notifications concurrently
+                    const pushPromises = subscriptions.map(sub => sendWebPush(sub, payload, env.VAPID_KEYS));
+                    await Promise.allSettled(pushPromises);
+                }
+            } catch (err) {
+                console.error("Failed to process push notifications:", err);
+            }
+        }
 
         return Response.json({ success: true, message: "Request pending" }, { headers: corsHeaders });
     }
@@ -202,4 +236,36 @@ export async function handleAdminFilterRequest(request, env, ctx, url) {
     }
 
     return null;
+}
+
+// ------------------------------------------------------------------
+// 🔔 HELPER: DISPATCH WEB PUSH NOTIFICATION
+// ------------------------------------------------------------------
+async function sendWebPush(subscription, payload, vapidKeysJson) {
+    try {
+        const keys = JSON.parse(vapidKeysJson);
+        
+        // Setup the VAPID details so the browser push server trusts the payload
+        webpush.setVapidDetails(
+            'mailto:admin@glassbox.local', 
+            keys.publicKey, 
+            keys.privateKey
+        );
+        
+        // Reconstruct the subscription object exactly how web-push expects it
+        const pushSubscription = {
+            endpoint: subscription.endpoint,
+            keys: {
+                p256dh: subscription.p256dh,
+                auth: subscription.auth
+            }
+        };
+
+        // Fire off the encrypted notification!
+        await webpush.sendNotification(pushSubscription, payload);
+        console.log(`✅ [Push Notification] Successfully dispatched to ${subscription.endpoint}`);
+
+    } catch (err) {
+        console.error("❌ Error dispatching push notification:", err);
+    }
 }
