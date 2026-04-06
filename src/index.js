@@ -131,8 +131,8 @@ async function runMidnightRollup(env) {
                 yesterdayStr,
                 row.target,
                 row.status,
-                row.total_minutes,
-                row.total_hits
+                row.total_minutes || 0,
+                row.total_hits || 0
             );
         });
 
