@@ -52,10 +52,11 @@ export default {
         else if (event.cron === "0 * * * *") {
             const timezone = env.SCHOOL_TIMEZONE || "UTC";
             
+            // 🎯 FIX: Used hourCycle 'h23' to guarantee midnight is '0' and not '24'
             const localHourStr = new Intl.DateTimeFormat("en-US", {
                 timeZone: timezone,
                 hour: "numeric",
-                hour12: false
+                hourCycle: "h23"
             }).format(new Date());
             
             const localHour = parseInt(localHourStr, 10);
@@ -113,16 +114,17 @@ async function runMidnightRollup(env) {
             return;
         }
 
+        // 🎯 FIX: Subtract 2 hours (7,200,000 ms) instead of 24 hours to safely land on "yesterday"
+        // This prevents DST "Spring Forward" 23-hour days from pushing the date back 48 hours!
         const yesterdayStr = new Intl.DateTimeFormat("en-CA", { 
             timeZone: env.SCHOOL_TIMEZONE || "UTC", 
             year: "numeric", month: "2-digit", day: "2-digit" 
-        }).format(new Date(Date.now() - 86400000));
+        }).format(new Date(Date.now() - 7200000));
 
         const insertStmts = rows.map(row => {
             return env.TELEMETRY_DB.prepare(`
                 INSERT INTO daily_rollups (log_date, target, status, total_minutes, total_hits)
                 VALUES (?, ?, ?, ?, ?)
-                -- 🎯 CRITICAL FIX: Match the new constraint exactly
                 ON CONFLICT(log_date, target, status) 
                 DO UPDATE SET 
                     total_minutes = excluded.total_minutes,
