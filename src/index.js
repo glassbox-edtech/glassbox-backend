@@ -118,7 +118,8 @@ async function runMidnightRollup(env) {
                 blob3 AS target, 
                 blob4 AS status, 
                 SUM(if(blob1 = 'time_log', double1, 0)) AS total_minutes, 
-                SUM(if(blob1 = 'hit_log', double1, 0)) AS total_hits 
+                SUM(if(blob1 = 'hit_log', double1, 0)) AS total_hits,
+                uniq(blob2) AS unique_students
             FROM glassbox_logs 
             WHERE timestamp >= '${startSql}' 
               AND timestamp < '${endSql}' 
@@ -155,18 +156,20 @@ async function runMidnightRollup(env) {
 
         const insertStmts = rows.map(row => {
             return env.TELEMETRY_DB.prepare(`
-                INSERT INTO daily_rollups (log_date, target, status, total_minutes, total_hits)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO daily_rollups (log_date, target, status, total_minutes, total_hits, unique_students)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(log_date, target, status) 
                 DO UPDATE SET 
                     total_minutes = excluded.total_minutes,
-                    total_hits = excluded.total_hits
+                    total_hits = excluded.total_hits,
+                    unique_students = excluded.unique_students
             `).bind(
                 yesterdayStr,
                 row.target,
                 row.status,
                 row.total_minutes || 0,
-                row.total_hits || 0
+                row.total_hits || 0,
+                row.unique_students || 0
             );
         });
 

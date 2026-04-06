@@ -84,7 +84,7 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
 
             // 🗄️ ATTEMPT A: WARM STORAGE
             if (useWarmStorage && env.TELEMETRY_DB) {
-                let d1Query = `SELECT target, SUM(total_minutes) AS total_minutes FROM daily_rollups WHERE 1=1`;
+                let d1Query = `SELECT target, SUM(total_minutes) AS total_minutes, SUM(unique_students) AS unique_students FROM daily_rollups WHERE 1=1`;
                 const params = [];
                 
                 if (timeframeParam !== "all") {
@@ -97,22 +97,21 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
                     d1Query += ` AND status = '${cleanStatus}'`;
                 }
 
-                d1Query += ` GROUP BY target HAVING total_minutes >= ${minMinutes}`;
+                d1Query += ` GROUP BY target HAVING SUM(total_minutes) >= ${minMinutes}`;
 
                 if (maxMinutes !== null) {
-                    d1Query += ` AND total_minutes <= ${maxMinutes}`;
+                    d1Query += ` AND SUM(total_minutes) <= ${maxMinutes}`;
                 }
 
                 d1Query += ` ORDER BY total_minutes DESC LIMIT ${limit}`;
 
-                // Only pass params array if we actually added any binds (currently empty, but safe)
                 const { results } = await env.TELEMETRY_DB.prepare(d1Query).all();
                 
-                // Only return if D1 actually has data. If it's empty, fall through to Analytics Engine!
                 if (results && results.length > 0) {
                     const reports = results.map(row => ({
                         target: row.target,
-                        total_minutes: Math.round(row.total_minutes * 10) / 10
+                        total_minutes: Math.round(row.total_minutes * 10) / 10,
+                        unique_students: row.unique_students || 1
                     }));
                     return Response.json({ reports: reports }, { headers: corsHeaders });
                 }
@@ -123,7 +122,7 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
                 return jsonError("Cloudflare API credentials not configured on Worker.", 500);
             }
 
-            let query = `SELECT blob3 AS target, SUM(double1) AS total_minutes FROM glassbox_logs WHERE blob1 = 'time_log'`;
+            let query = `SELECT blob3 AS target, SUM(double1) AS total_minutes, uniq(blob2) AS unique_students FROM glassbox_logs WHERE blob1 = 'time_log'`;
 
             if (timeframeParam !== "all") {
                 const days = parseInt(timeframeParam) || 7;
@@ -140,10 +139,10 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
                 query += ` AND blob4 = '${cleanStatus}'`;
             }
 
-            query += ` GROUP BY blob3 HAVING total_minutes >= ${minMinutes}`;
+            query += ` GROUP BY blob3 HAVING SUM(double1) >= ${minMinutes}`;
 
             if (maxMinutes !== null) {
-                query += ` AND total_minutes <= ${maxMinutes}`;
+                query += ` AND SUM(double1) <= ${maxMinutes}`;
             }
 
             query += ` ORDER BY total_minutes DESC LIMIT ${limit}`;
@@ -167,7 +166,8 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
 
             const reports = data.data.map(row => ({
                 target: row.target,
-                total_minutes: Math.round(row.total_minutes * 10) / 10
+                total_minutes: Math.round(row.total_minutes * 10) / 10,
+                unique_students: row.unique_students || 1
             }));
 
             return Response.json({ reports: reports }, { headers: corsHeaders });
@@ -175,6 +175,66 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
         } catch (err) {
             console.error("Admin Insight Report Error:", err);
             return jsonError(`Report Error: ${err.message}`, 500);
+        }
+    }
+
+    // ---------------------------------------------------------
+    // 🚨 ROUTE: GET /api/admin/insight/outliers 
+    // Hunts for individual students abusing the network (Density < 1, Time > High)
+    // ---------------------------------------------------------
+    if (request.method === "GET" && url.pathname === "/api/admin/insight/outliers") {
+        try {
+            if (!env.CF_ACCOUNT_ID || !env.CF_API_TOKEN) {
+                return jsonError("Cloudflare API credentials not configured on Worker.", 500);
+            }
+
+            // For Outliers, we default to 60+ continuous minutes as a red flag
+            const outlierMinMinutes = parseFloat(url.searchParams.get("minMinutes")) || 60;
+            const days = timeframeParam === "all" ? 30 : (parseInt(timeframeParam) || 7);
+
+            // We only query Hot Storage for this because D1 rollups lose individual student context
+            let query = `
+                SELECT 
+                    blob2 AS student_hash, 
+                    blob3 AS target, 
+                    SUM(double1) AS total_minutes 
+                FROM glassbox_logs 
+                WHERE blob1 = 'time_log'
+                  AND timestamp >= NOW() - INTERVAL '${days}' DAY
+            `;
+
+            if (statusFilter !== "all") {
+                const cleanStatus = statusFilter === 'approved' ? 'approved' : 'unapproved';
+                query += ` AND blob4 = '${cleanStatus}'`;
+            }
+
+            // We group by BOTH the student and the target, returning only those exceeding the threshold
+            query += ` GROUP BY blob2, blob3 HAVING SUM(double1) >= ${outlierMinMinutes} ORDER BY total_minutes DESC LIMIT ${limit}`;
+
+            const cfApiUrl = `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID.trim()}/analytics_engine/sql`;
+            const cfResponse = await fetch(cfApiUrl, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${env.CF_API_TOKEN.trim()}`,
+                    'Content-Type': 'application/x-sql'
+                },
+                body: query
+            });
+
+            if (!cfResponse.ok) throw new Error(`HTTP ${cfResponse.status}: ${await cfResponse.text()}`);
+            const data = await cfResponse.json();
+
+            const outliers = (data.data || []).map(row => ({
+                student_hash: row.student_hash,
+                target: row.target,
+                total_minutes: Math.round(row.total_minutes * 10) / 10
+            }));
+
+            return Response.json({ outliers: outliers }, { headers: corsHeaders });
+
+        } catch (err) {
+            console.error("Admin Insight Outliers Error:", err);
+            return jsonError(`Outliers Error: ${err.message}`, 500);
         }
     }
 

@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS daily_rollups (
     status TEXT NOT NULL,          
     total_minutes REAL DEFAULT 0,  
     total_hits INTEGER DEFAULT 0,  
+    unique_students INTEGER DEFAULT 0, -- 🎯 NEW: Tracks unique users per target
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 
     -- 🎯 CRITICAL FIX: Added status to the unique constraint
