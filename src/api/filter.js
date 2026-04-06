@@ -86,6 +86,47 @@ export async function handleAdminFilterRequest(request, env, ctx, url) {
         return Response.json(results, { headers: corsHeaders });
     }
 
+    // ---------------------------------------------------------
+    // 📋 NEW ROUTE: GET /api/admin/filter/rules (Paginated Active Rules)
+    // ---------------------------------------------------------
+    if (request.method === "GET" && url.pathname === "/api/admin/filter/rules") {
+        const page = parseInt(url.searchParams.get("page")) || 1;
+        const limit = parseInt(url.searchParams.get("limit")) || 10;
+        const offset = (page - 1) * limit;
+
+        const countResult = await env.DB.prepare(`SELECT COUNT(*) as total FROM rules WHERE is_active = 1`).first();
+        const total = countResult ? countResult.total : 0;
+
+        const { results } = await env.DB.prepare(
+            `SELECT id, target, match_type, action, version_added FROM rules WHERE is_active = 1 ORDER BY id DESC LIMIT ? OFFSET ?`
+        ).bind(limit, offset).all();
+
+        return Response.json({ rules: results, total, page, limit }, { headers: corsHeaders });
+    }
+
+    // ---------------------------------------------------------
+    // 🗑️ NEW ROUTE: POST /api/admin/filter/rules/remove (Retire an active rule)
+    // ---------------------------------------------------------
+    if (request.method === "POST" && url.pathname === "/api/admin/filter/rules/remove") {
+        const body = await request.json();
+        const { ruleId } = body;
+
+        if (!ruleId) return jsonError("Rule ID is required.", 400);
+
+        await env.DB.prepare(`UPDATE system_state SET current_version = current_version + 1 WHERE id = 1`).run();
+        const state = await env.DB.prepare(`SELECT current_version FROM system_state WHERE id = 1`).first();
+
+        // Safely retire the rule by marking it inactive and setting the version_removed tracker
+        await env.DB.prepare(
+            `UPDATE rules SET is_active = 0, version_removed = ? WHERE id = ? AND is_active = 1`
+        ).bind(state.current_version, ruleId).run();
+
+        // ⚡ Rebuild KV Cache immediately so extensions sync the removal
+        await rebuildMasterRulesCache(env, ctx);
+
+        return Response.json({ success: true, message: "Rule successfully retired." }, { headers: corsHeaders });
+    }
+
     // ROUTE: POST /api/admin/filter/resolve (Admin UI approving)
     if (request.method === "POST" && url.pathname === "/api/admin/filter/resolve") {
         const body = await request.json();
