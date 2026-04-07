@@ -113,12 +113,13 @@ async function runMidnightRollup(env) {
         // ==========================================
         // 🗄️ QUERY CLOUDFLARE ANALYTICS
         // ==========================================
+        // 🎯 FIX: Changed 0 to 0.0 so both IF arguments are identical 'Double' types!
         const query = `
             SELECT 
                 blob3 AS target, 
                 blob4 AS status, 
-                SUM(if(blob1 = 'time_log', double1, 0)) AS total_minutes, 
-                SUM(if(blob1 = 'hit_log', double1, 0)) AS total_hits,
+                SUM(if(blob1 = 'time_log', double1, 0.0)) AS total_minutes, 
+                SUM(if(blob1 = 'hit_log', double1, 0.0)) AS total_hits,
                 COUNT(DISTINCT blob2) AS unique_students
             FROM glassbox_logs 
             WHERE timestamp >= '${startSql}' 
