@@ -50,7 +50,7 @@ export async function handleFilterRequest(request, env, url) {
                     });
 
                     // Dispatch notifications concurrently
-                    const pushPromises = subscriptions.map(sub => sendWebPush(sub, payload, env.VAPID_KEYS));
+                    const pushPromises = subscriptions.map(sub => sendWebPush(env, sub, payload, env.VAPID_KEYS));
                     await Promise.allSettled(pushPromises);
                 }
             } catch (err) {
@@ -241,7 +241,7 @@ export async function handleAdminFilterRequest(request, env, ctx, url) {
 // ------------------------------------------------------------------
 // 🔔 HELPER: DISPATCH WEB PUSH NOTIFICATION
 // ------------------------------------------------------------------
-async function sendWebPush(subscription, payload, vapidKeysJson) {
+async function sendWebPush(env, subscription, payload, vapidKeysJson) {
     try {
         const keys = JSON.parse(vapidKeysJson);
         
@@ -266,6 +266,19 @@ async function sendWebPush(subscription, payload, vapidKeysJson) {
         console.log(`✅ [Push Notification] Successfully dispatched to ${subscription.endpoint}`);
 
     } catch (err) {
-        console.error("❌ Error dispatching push notification:", err);
+        // 🚨 410 GONE / 404 NOT FOUND: Subscription has expired or been revoked
+        if (err.statusCode === 410 || err.statusCode === 404) {
+            console.warn(`🗑️ Subscription expired (HTTP ${err.statusCode}). Removing from database...`);
+            try {
+                await env.DB.prepare(`DELETE FROM admin_push_subscriptions WHERE endpoint = ?`)
+                    .bind(subscription.endpoint)
+                    .run();
+                console.log(`✅ Dead subscription removed successfully.`);
+            } catch (dbErr) {
+                console.error("❌ Failed to delete dead subscription from DB:", dbErr);
+            }
+        } else {
+            console.error("❌ Error dispatching push notification:", err);
+        }
     }
 }
