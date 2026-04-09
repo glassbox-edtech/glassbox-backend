@@ -243,7 +243,16 @@ export async function handleAdminFilterRequest(request, env, ctx, url) {
 // ------------------------------------------------------------------
 async function sendNativeWebPush(env, subscription, payloadString, vapidKeysJson) {
     try {
-        await sendNativePush(subscription, payloadString, vapidKeysJson);
+        // Reconstruct the flat D1 database row into a standard nested Web Push object
+        const formattedSubscription = {
+            endpoint: subscription.endpoint,
+            keys: {
+                p256dh: subscription.p256dh,
+                auth: subscription.auth
+            }
+        };
+
+        await sendNativePush(formattedSubscription, payloadString, vapidKeysJson);
         console.log(`✅ [Push Notification] Successfully dispatched encrypted payload to ${subscription.endpoint}`);
     } catch (err) {
         // 🚨 410 GONE / 404 NOT FOUND: Subscription has expired or been revoked
