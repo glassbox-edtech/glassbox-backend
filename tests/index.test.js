@@ -21,7 +21,7 @@ beforeEach(async () => {
         env.DB.prepare(`DROP TABLE IF EXISTS unblock_requests`),
         
         env.DB.prepare(`CREATE TABLE system_state (id INTEGER PRIMARY KEY CHECK (id = 1), current_version INTEGER NOT NULL DEFAULT 1)`),
-        env.DB.prepare(`CREATE TABLE rules (id INTEGER PRIMARY KEY AUTOINCREMENT, target TEXT NOT NULL, match_type TEXT DEFAULT 'domain', action TEXT NOT NULL, version_added INTEGER NOT NULL, version_removed INTEGER, is_active BOOLEAN DEFAULT 1)`),
+        env.DB.prepare(`CREATE TABLE rules (id INTEGER PRIMARY KEY AUTOINCREMENT, target TEXT NOT NULL, match_type TEXT DEFAULT 'domain', action TEXT NOT NULL, version_added INTEGER NOT NULL, version_removed INTEGER, is_active BOOLEAN DEFAULT 1, expires_at TIMESTAMP DEFAULT NULL)`),
         env.DB.prepare(`CREATE TABLE unblock_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, student_hash TEXT NOT NULL, url TEXT NOT NULL, reason TEXT NOT NULL, status TEXT DEFAULT 'pending', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`),
         
         // Seed system state to version 60 so we can test the "current_version - 50" cleanup logic
