@@ -75,19 +75,38 @@ describe('Filter API - Student Routes', () => {
         expect(response.status).toBe(400);
     });
 
-    // 🧹 NEW TEST: Push Notification Cleanup
+    // 🧹 NEW TEST: Push Notification Cleanup (Updated for Native Crypto)
     it('should dispatch push notifications and automatically delete dead endpoints (404/410)', async () => {
-        // 1. Inject a dummy VAPID_KEYS environment variable to trigger the push logic
-        env.VAPID_KEYS = JSON.stringify({ publicKey: 'dummy_pub', privateKey: 'dummy_priv' });
+        // 1. Generate cryptographically valid keys so the native crypto engine doesn't crash
+        const vapidKeyPair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+        const vapidJwk = await crypto.subtle.exportKey('jwk', vapidKeyPair.privateKey);
+        const vapidPubRaw = await crypto.subtle.exportKey('raw', vapidKeyPair.publicKey);
+        const vapidPubB64 = btoa(String.fromCharCode(...new Uint8Array(vapidPubRaw))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        
+        const browserKeyPair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+        const browserPubRaw = await crypto.subtle.exportKey('raw', browserKeyPair.publicKey);
+        const browserPubB64 = btoa(String.fromCharCode(...new Uint8Array(browserPubRaw))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        const browserAuth = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 
-        // 2. Seed the DB with 1 good subscription and 2 bad subscriptions using batch for reliability
+        env.VAPID_KEYS = JSON.stringify({ publicKey: vapidPubB64, privateKey: vapidJwk.d });
+
+        // 2. Mock global fetch to simulate push server responses (Success vs Gone)
+        const originalFetch = globalThis.fetch;
+        globalThis.fetch = vi.fn(async (url) => {
+            if (url.includes('invalid-push')) {
+                return new Response('Gone', { status: 410 });
+            }
+            return new Response('Created', { status: 201 });
+        });
+
+        // 3. Seed the DB with 1 good subscription and 2 bad subscriptions using batch for reliability
         await env.DB.batch([
-            env.DB.prepare(`INSERT INTO admin_push_subscriptions (endpoint, p256dh, auth) VALUES ('https://web-push.local/good-push', 'key1', 'auth1')`),
-            env.DB.prepare(`INSERT INTO admin_push_subscriptions (endpoint, p256dh, auth) VALUES ('https://web-push.local/invalid-push1', 'key2', 'auth2')`),
-            env.DB.prepare(`INSERT INTO admin_push_subscriptions (endpoint, p256dh, auth) VALUES ('https://web-push.local/invalid-push2', 'key3', 'auth3')`)
+            env.DB.prepare(`INSERT INTO admin_push_subscriptions (endpoint, p256dh, auth) VALUES ('https://web-push.local/good-push', ?, ?)`).bind(browserPubB64, browserAuth),
+            env.DB.prepare(`INSERT INTO admin_push_subscriptions (endpoint, p256dh, auth) VALUES ('https://web-push.local/invalid-push1', ?, ?)`).bind(browserPubB64, browserAuth),
+            env.DB.prepare(`INSERT INTO admin_push_subscriptions (endpoint, p256dh, auth) VALUES ('https://web-push.local/invalid-push2', ?, ?)`).bind(browserPubB64, browserAuth)
         ]);
 
-        // 3. Trigger a student unblock request (which fires the push notifications)
+        // 4. Trigger a student unblock request (which fires the push notifications)
         const payload = {
             studentHash: 'clean-up-test-hash',
             url: 'https://test.com',
@@ -101,7 +120,10 @@ describe('Filter API - Student Routes', () => {
 
         await handleFilterRequest(req, env, new URL(req.url));
 
-        // 4. Verify the database automatically pruned the two bad endpoints
+        // Restore global fetch
+        globalThis.fetch = originalFetch;
+
+        // 5. Verify the database automatically pruned the two bad endpoints
         const dbResult = await env.DB.prepare(`SELECT endpoint FROM admin_push_subscriptions`).all();
         
         expect(dbResult.results.length).toBe(1);
