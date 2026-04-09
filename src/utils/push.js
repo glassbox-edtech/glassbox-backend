@@ -116,14 +116,18 @@ export async function sendNativePush(subscription, payloadString, vapidKeysJson)
         context.set(clientPubKey, infoStr.length);
         context.set(ephemeralPubKey, infoStr.length + clientPubKey.length);
 
-        // HKDF-Expand into Pseudo-Random Key
-        const prk = await hkdfExpand(prkKey, context, 32);
+        // HKDF-Expand into Input Keying Material (IKM)
+        const ikm = await hkdfExpand(prkKey, context, 32);
+
+        // 🎯 FIX: SECOND HKDF-Extract! RFC 8188 requires mixing the 16-byte random salt 
+        // with the IKM to generate the final Content PRK.
+        const contentPrk = await hmac(salt, ikm);
 
         // Derive AES Content Encryption Key (CEK) & Nonce
         const cekInfo = new TextEncoder().encode("Content-Encoding: aes128gcm\0");
-        const cekBuf = await hkdfExpand(prk, cekInfo, 16);
+        const cekBuf = await hkdfExpand(contentPrk, cekInfo, 16);
         const nonceInfo = new TextEncoder().encode("Content-Encoding: nonce\0");
-        const nonce = await hkdfExpand(prk, nonceInfo, 12);
+        const nonce = await hkdfExpand(contentPrk, nonceInfo, 12);
 
         // D. AES-128-GCM Encryption
         const cek = await crypto.subtle.importKey(
@@ -136,8 +140,9 @@ export async function sendNativePush(subscription, payloadString, vapidKeysJson)
         recordPlaintext.set(plaintextBytes, 0);
         recordPlaintext[plaintextBytes.length] = 0x02; 
 
+        // 🎯 FIX: Added explicit tagLength to ensure universal browser compatibility
         const encryptedPayloadBuf = await crypto.subtle.encrypt(
-            { name: 'AES-GCM', iv: nonce }, cek, recordPlaintext
+            { name: 'AES-GCM', iv: nonce, tagLength: 128 }, cek, recordPlaintext
         );
         const encryptedPayload = new Uint8Array(encryptedPayloadBuf);
 
