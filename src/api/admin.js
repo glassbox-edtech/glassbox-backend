@@ -7,6 +7,7 @@ import { handleAdminSchoolsRequest } from './schools.js';
 import { handleAdminUsersRequest } from './users.js';
 // 🎯 NEW IMPORT
 import { handleAdminClassroomsRequest } from './classrooms.js';
+import { handleTeacherRequest } from './teacher.js';
 
 export async function handleAdminRequest(request, env, ctx, url) {
     // 🔒 GLOBAL AUTH MIDDLEWARE (RBAC)
@@ -14,6 +15,13 @@ export async function handleAdminRequest(request, env, ctx, url) {
     const authHeader = request.headers.get("Authorization");
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
         return jsonError("Unauthorized", 401);
+    }
+    // Attach the user object
+    request.user = user;
+
+    // 🎯 NEW: Hand off Teacher Portal requests
+    if (url.pathname.startsWith("/api/admin/teacher")) {
+        return await handleTeacherRequest(request, env, ctx, url);
     }
 
     const token = authHeader.substring(7);
