@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS schools (
 CREATE TABLE IF NOT EXISTS delegated_users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     school_id INTEGER NOT NULL,
-    role TEXT NOT NULL, -- 'teacher', 'school_admin'
+    role TEXT NOT NULL, -- 'teacher', 'school_admin', 'master_admin'
     username TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
     token TEXT, -- For active session Bearer auth
@@ -117,15 +117,32 @@ CREATE TABLE IF NOT EXISTS system_settings (
 );
 
 -- ==========================================
+-- SYSTEM AUDIT LOGGING
+-- ==========================================
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,                   -- Which teacher/admin made the change
+    action TEXT NOT NULL,              -- e.g., 'approve_request', 'block_domain', 'change_setting'
+    target TEXT,                       -- The domain or setting affected
+    details TEXT,                      -- Extra JSON context
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES delegated_users(id) ON DELETE SET NULL
+);
+
+-- ==========================================
 -- DEFAULT SYSTEM INITIALIZATION
 -- ==========================================
 
 -- Initialize the system state to version 1
 INSERT OR IGNORE INTO system_state (id, current_version) VALUES (1, 1);
 
--- 🎯 NEW: Initialize the DEFAULT school so current extensions don't break
+-- Initialize the DEFAULT school so current extensions don't break
 INSERT OR IGNORE INTO schools (id, name) VALUES (1, 'DEFAULT');
 
 -- Initialize default Insight settings
 INSERT OR IGNORE INTO system_settings (setting_key, setting_value, description) 
 VALUES ('insight_unapproved_threshold_minutes', '5', 'Minimum minutes spent on an unapproved site before it is logged');
+
+-- Initialize Audit Logging to disabled by default
+INSERT OR IGNORE INTO system_settings (setting_key, setting_value, description) 
+VALUES ('enable_audit_logging', '0', 'Enable tracking of admin and teacher actions (1 for yes, 0 for no)');
