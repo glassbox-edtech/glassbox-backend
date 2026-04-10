@@ -4,12 +4,41 @@ import { handleAdminInsightRequest } from './insight.js';
 import { handleAdminSettingsRequest } from './settings.js';
 
 export async function handleAdminRequest(request, env, ctx, url) {
-    // 🔒 GLOBAL AUTH MIDDLEWARE
+    // 🔒 GLOBAL AUTH MIDDLEWARE (RBAC)
     // Every request hitting this file MUST have a valid Bearer token.
     const authHeader = request.headers.get("Authorization");
-    if (authHeader !== `Bearer ${env.ADMIN_SECRET}`) {
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
         return jsonError("Unauthorized", 401);
     }
+
+    const token = authHeader.substring(7);
+    let user = null;
+
+    // 1. MASTER BACKDOOR: Check if they are using the environment secret (Fresh installs)
+    if (token === env.ADMIN_SECRET) {
+        user = { id: 0, school_id: 1, role: 'master_admin', username: 'admin_backdoor' };
+    } 
+    // 2. STANDARD DB CHECK: Validate token against delegated_users
+    else {
+        user = await env.DB.prepare(
+            `SELECT id, school_id, role, username FROM delegated_users WHERE token = ?`
+        ).bind(token).first();
+
+        if (!user) {
+            return jsonError("Unauthorized or Session Expired", 401);
+        }
+
+        // ⏱️ BUMP IDLE TIMEOUT: Update the last_active_at timestamp so they don't get logged out!
+        // We use ctx.waitUntil so the API doesn't slow down waiting for this database write.
+        ctx.waitUntil(
+            env.DB.prepare(
+                `UPDATE delegated_users SET last_active_at = CURRENT_TIMESTAMP WHERE id = ?`
+            ).bind(user.id).run()
+        );
+    }
+
+    // Attach the user object to the request so downstream routes can use user.school_id and user.role!
+    request.user = user;
 
     // ---------------------------------------------------------
     // 🚦 ROUTING: Hand off to the specific domain modules
@@ -64,14 +93,14 @@ export async function handleAdminRequest(request, env, ctx, url) {
                 return jsonError("Invalid subscription payload.", 400);
             }
 
-            // Insert or update the subscription based on the unique endpoint URL
+            // 🎯 NEW: Scoped to the admin's specific school!
             await env.DB.prepare(
-                `INSERT INTO admin_push_subscriptions (endpoint, p256dh, auth) 
-                 VALUES (?, ?, ?) 
+                `INSERT INTO admin_push_subscriptions (school_id, endpoint, p256dh, auth) 
+                 VALUES (?, ?, ?, ?) 
                  ON CONFLICT(endpoint) DO UPDATE SET 
                     p256dh = excluded.p256dh, 
                     auth = excluded.auth`
-            ).bind(sub.endpoint, sub.keys.p256dh, sub.keys.auth).run();
+            ).bind(user.school_id, sub.endpoint, sub.keys.p256dh, sub.keys.auth).run();
 
             return Response.json({ success: true, message: "Subscription saved successfully." }, { headers: corsHeaders });
         } catch (err) {

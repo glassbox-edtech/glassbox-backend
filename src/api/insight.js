@@ -2,13 +2,22 @@ import { corsHeaders, cacheHeaders, jsonError } from '../utils/helpers.js';
 
 export async function handleInsightRequest(request, env, url) {
 
+    // ---------------------------------------------------------
+    // 🎒 ROUTE: GET /api/insight/sync
+    // ---------------------------------------------------------
     if (request.method === "GET" && url.pathname === "/api/insight/sync") {
         try {
+            // 🎯 FIX: Read the schoolId from the query parameters (defaults to 1)
+            const schoolId = parseInt(url.searchParams.get("schoolId")) || 1;
+
             const { results: settings } = await env.DB.prepare(`SELECT setting_key, setting_value FROM system_settings`).all();
             const configObj = {};
             settings.forEach(s => configObj[s.setting_key] = s.setting_value);
 
-            const { results: apps } = await env.DB.prepare(`SELECT domain FROM approved_apps`).all();
+            // 🎯 FIX: Fetch global approved apps (1) AND school-specific approved apps
+            const { results: apps } = await env.DB.prepare(
+                `SELECT domain FROM approved_apps WHERE school_id IN (1, ?)`
+            ).bind(schoolId).all();
             const appDomains = apps.map(a => a.domain);
 
             return Response.json({
@@ -20,6 +29,9 @@ export async function handleInsightRequest(request, env, url) {
         }
     }
 
+    // ---------------------------------------------------------
+    // 🎒 ROUTE: POST /api/insight/ingest
+    // ---------------------------------------------------------
     if (request.method === "POST" && url.pathname === "/api/insight/ingest") {
         try {
             const body = await request.json();
@@ -29,7 +41,14 @@ export async function handleInsightRequest(request, env, url) {
                 return jsonError("Invalid payload format", 400);
             }
 
-            const { results: apps } = await env.DB.prepare(`SELECT domain FROM approved_apps`).all();
+            // 🎯 FIX: Look up the student's locked school ID on the fly
+            const student = await env.DB.prepare(`SELECT school_id FROM students WHERE student_hash = ?`).bind(studentHash).first();
+            const schoolId = student ? student.school_id : 1;
+
+            const { results: apps } = await env.DB.prepare(
+                `SELECT domain FROM approved_apps WHERE school_id IN (1, ?)`
+            ).bind(schoolId).all();
+            
             const approvedSet = new Set(apps.map(a => a.domain));
 
             let pointsWritten = 0;
@@ -43,14 +62,15 @@ export async function handleInsightRequest(request, env, url) {
                 const isApprovedStr = approvedSet.has(domainToCheck) ? "approved" : "unapproved";
 
                 env.GLASSBOX_LOGS.writeDataPoint({
-                    blobs: [logType, studentHash, target, isApprovedStr], 
+                    // 🎯 FIX: Injected String(schoolId) into blob5 so we can filter Hot Storage queries by campus!
+                    blobs: [logType, studentHash, target, isApprovedStr, String(schoolId)], 
                     doubles: [value]
                 });
                 
                 pointsWritten++;
             }
 
-            return Response.json({ success: true, message: `Ingested ${pointsWritten} data points.` }, { headers: corsHeaders });
+            return Response.json({ success: true, message: `Ingested ${pointsWritten} data points for school ${schoolId}.` }, { headers: corsHeaders });
 
         } catch (err) {
             console.error("Insight Ingest Error:", err);
@@ -66,6 +86,10 @@ export async function handleInsightRequest(request, env, url) {
 // ------------------------------------------------------------------
 export async function handleAdminInsightRequest(request, env, ctx, url) {
     
+    // 🎯 FIX: Extract scoped variables from the authenticated user object
+    const adminSchoolId = request.user.school_id;
+    const auditUserId = request.user.id === 0 ? null : request.user.id;
+
     const timeframeParam = url.searchParams.get("timeframe") || "7";
     const studentHash = url.searchParams.get("studentHash") || null;
     const limit = parseInt(url.searchParams.get("limit")) || 50;
@@ -84,8 +108,8 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
 
             // 🗄️ ATTEMPT A: WARM STORAGE
             if (useWarmStorage && env.TELEMETRY_DB) {
-                let d1Query = `SELECT target, SUM(total_minutes) AS total_minutes, SUM(unique_students) AS unique_students FROM daily_rollups WHERE 1=1`;
-                const params = [];
+                // 🎯 FIX: Hardcode the school_id scope
+                let d1Query = `SELECT target, SUM(total_minutes) AS total_minutes, SUM(unique_students) AS unique_students FROM daily_rollups WHERE school_id = ${adminSchoolId}`;
                 
                 if (timeframeParam !== "all") {
                     const days = parseInt(timeframeParam) || 30;
@@ -122,7 +146,8 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
                 return jsonError("Cloudflare API credentials not configured on Worker.", 500);
             }
 
-            let query = `SELECT blob3 AS target, SUM(double1) AS total_minutes, COUNT(DISTINCT blob2) AS unique_students FROM glassbox_logs WHERE blob1 = 'time_log'`;
+            // 🎯 FIX: Add blob5 filter to isolate traffic to this admin's school
+            let query = `SELECT blob3 AS target, SUM(double1) AS total_minutes, COUNT(DISTINCT blob2) AS unique_students FROM glassbox_logs WHERE blob1 = 'time_log' AND blob5 = '${adminSchoolId}'`;
 
             if (timeframeParam !== "all") {
                 const days = parseInt(timeframeParam) || 7;
@@ -188,11 +213,10 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
                 return jsonError("Cloudflare API credentials not configured on Worker.", 500);
             }
 
-            // For Outliers, we default to 60+ continuous minutes as a red flag
             const outlierMinMinutes = parseFloat(url.searchParams.get("minMinutes")) || 60;
             const days = timeframeParam === "all" ? 30 : (parseInt(timeframeParam) || 7);
 
-            // We only query Hot Storage for this because D1 rollups lose individual student context
+            // 🎯 FIX: Added blob5 filter to isolate outliers to this specific school
             let query = `
                 SELECT 
                     blob2 AS student_hash, 
@@ -200,6 +224,7 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
                     SUM(double1) AS total_minutes 
                 FROM glassbox_logs 
                 WHERE blob1 = 'time_log'
+                  AND blob5 = '${adminSchoolId}'
                   AND timestamp >= NOW() - INTERVAL '${days}' DAY
             `;
 
@@ -208,7 +233,6 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
                 query += ` AND blob4 = '${cleanStatus}'`;
             }
 
-            // We group by BOTH the student and the target, returning only those exceeding the threshold
             query += ` GROUP BY blob2, blob3 HAVING SUM(double1) >= ${outlierMinMinutes} ORDER BY total_minutes DESC LIMIT ${limit}`;
 
             const cfApiUrl = `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID.trim()}/analytics_engine/sql`;
@@ -245,7 +269,8 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
         try {
             // 🗄️ ATTEMPT A: WARM STORAGE
             if (useWarmStorage && env.TELEMETRY_DB) {
-                let d1Query = `SELECT target, status, SUM(total_hits) AS hits FROM daily_rollups WHERE 1=1`;
+                // 🎯 FIX: Hardcode the school_id scope
+                let d1Query = `SELECT target, status, SUM(total_hits) AS hits FROM daily_rollups WHERE school_id = ${adminSchoolId}`;
                 
                 if (timeframeParam !== "all") {
                     const days = parseInt(timeframeParam) || 30;
@@ -272,7 +297,8 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
                 return jsonError("Cloudflare API credentials not configured on Worker.", 500);
             }
 
-            let query = `SELECT blob3 AS target, blob4 AS status, SUM(double1) AS hits FROM glassbox_logs WHERE blob1 = 'hit_log'`;
+            // 🎯 FIX: Add blob5 filter to isolate traffic to this school
+            let query = `SELECT blob3 AS target, blob4 AS status, SUM(double1) AS hits FROM glassbox_logs WHERE blob1 = 'hit_log' AND blob5 = '${adminSchoolId}'`;
 
             if (timeframeParam !== "all") {
                 const days = parseInt(timeframeParam) || 7;
@@ -283,8 +309,6 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
                 const cleanStatus = statusFilter === 'approved' ? 'approved' : 'unapproved';
                 query += ` AND blob4 = '${cleanStatus}'`;
             }
-
-            // Notice: We don't filter by studentHash here because the live traffic table is meant to be global
 
             query += ` GROUP BY blob3, blob4 ORDER BY hits DESC LIMIT ${limit}`;
 
@@ -318,9 +342,10 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
     // ---------------------------------------------------------
     if (request.method === "GET" && url.pathname === "/api/admin/insight/apps") {
         try {
+            // 🎯 FIX: Only fetch apps that are globally approved (1) or approved by this school
             const { results } = await env.DB.prepare(
-                `SELECT id, domain, app_name, category, created_at FROM approved_apps ORDER BY domain ASC`
-            ).all();
+                `SELECT id, domain, app_name, category, created_at FROM approved_apps WHERE school_id IN (1, ?) ORDER BY domain ASC`
+            ).bind(adminSchoolId).all();
             
             return Response.json({ apps: results }, { headers: corsHeaders });
         } catch (err) {
@@ -342,20 +367,40 @@ export async function handleAdminInsightRequest(request, env, ctx, url) {
                 const cleanDomain = domain.toLowerCase().trim();
                 const safeCategory = category || "General";
 
+                // 🎯 FIX: Insert apps tagged to this specific school
                 await env.DB.prepare(
-                    `INSERT OR IGNORE INTO approved_apps (domain, app_name, category) VALUES (?, ?, ?)`
-                ).bind(cleanDomain, appName, safeCategory).run();
+                    `INSERT OR IGNORE INTO approved_apps (school_id, domain, app_name, category) VALUES (?, ?, ?, ?)`
+                ).bind(adminSchoolId, cleanDomain, appName, safeCategory).run();
+
+                // 📝 AUDIT LOGGING (Fire and Forget)
+                ctx.waitUntil((async () => {
+                    const settingsResult = await env.DB.prepare(`SELECT setting_value FROM system_settings WHERE setting_key = 'enable_audit_logging'`).first();
+                    if (settingsResult && settingsResult.setting_value === '1') {
+                        await env.DB.prepare(`INSERT INTO audit_logs (user_id, action, target) VALUES (?, 'add_approved_app', ?)`).bind(auditUserId, cleanDomain).run();
+                    }
+                })());
 
                 return Response.json({ success: true, message: `Added ${appName} (${cleanDomain}) to approved list.` }, { headers: corsHeaders });
             } 
             else if (action === "remove") {
+                // 🎯 FIX: Ensure they can only remove apps belonging to their school
                 if (id) {
-                    await env.DB.prepare(`DELETE FROM approved_apps WHERE id = ?`).bind(id).run();
+                    await env.DB.prepare(`DELETE FROM approved_apps WHERE id = ? AND school_id = ?`).bind(id, adminSchoolId).run();
                 } else if (domain) {
-                    await env.DB.prepare(`DELETE FROM approved_apps WHERE domain = ?`).bind(domain.toLowerCase()).run();
+                    await env.DB.prepare(`DELETE FROM approved_apps WHERE domain = ? AND school_id = ?`).bind(domain.toLowerCase(), adminSchoolId).run();
                 } else {
                     return jsonError("Valid ID or Domain required for removal.", 400);
                 }
+
+                // 📝 AUDIT LOGGING (Fire and Forget)
+                ctx.waitUntil((async () => {
+                    const targetLog = id ? `app_id_${id}` : domain.toLowerCase();
+                    const settingsResult = await env.DB.prepare(`SELECT setting_value FROM system_settings WHERE setting_key = 'enable_audit_logging'`).first();
+                    if (settingsResult && settingsResult.setting_value === '1') {
+                        await env.DB.prepare(`INSERT INTO audit_logs (user_id, action, target) VALUES (?, 'remove_approved_app', ?)`).bind(auditUserId, targetLog).run();
+                    }
+                })());
+
                 return Response.json({ success: true, message: "App removed from approved list." }, { headers: corsHeaders });
             }
 

@@ -21,10 +21,14 @@ export async function handleFilterRequest(request, env, url) {
             return jsonError("Invalid identity hash.", 400);
         }
 
+        // 🎯 FIX: Lookup the student's school_id (default to 1 if not found)
+        const student = await env.DB.prepare(`SELECT school_id FROM students WHERE student_hash = ?`).bind(studentHash).first();
+        const schoolId = student ? student.school_id : 1;
+
         // Insert the request and grab the newly generated ID
         const insertResult = await env.DB.prepare(
-            `INSERT INTO unblock_requests (student_hash, url, reason) VALUES (?, ?, ?) RETURNING id`
-        ).bind(studentHash, reqUrl, reason).first();
+            `INSERT INTO unblock_requests (school_id, student_hash, url, reason) VALUES (?, ?, ?, ?) RETURNING id`
+        ).bind(schoolId, studentHash, reqUrl, reason).first();
 
         const requestId = insertResult ? insertResult.id : null;
 
@@ -38,7 +42,8 @@ export async function handleFilterRequest(request, env, url) {
                     matchType = 'path';
                 }
 
-                const { results: subscriptions } = await env.DB.prepare(`SELECT * FROM admin_push_subscriptions`).all();
+                // 🎯 FIX: Only send push notifications to admins of THIS specific school
+                const { results: subscriptions } = await env.DB.prepare(`SELECT * FROM admin_push_subscriptions WHERE school_id = ?`).bind(schoolId).all();
                 
                 if (subscriptions && subscriptions.length > 0) {
                     const payload = JSON.stringify({
@@ -64,6 +69,8 @@ export async function handleFilterRequest(request, env, url) {
     // ROUTE: GET /api/filter/sync?version=X (Extension Polls for Delta Updates)
     if (request.method === "GET" && url.pathname === "/api/filter/sync") {
         const clientVersion = parseInt(url.searchParams.get("version")) || 0;
+        // 🎯 FIX: Read the schoolId from the query parameters (defaults to 1)
+        const schoolId = parseInt(url.searchParams.get("schoolId")) || 1;
 
         const state = await env.DB.prepare(`SELECT current_version FROM system_state WHERE id = 1`).first();
         const serverVersion = state.current_version;
@@ -76,9 +83,10 @@ export async function handleFilterRequest(request, env, url) {
             return Response.json({ status: "full_sync_required", version: serverVersion }, { headers: cacheHeaders });
         }
 
+        // 🎯 FIX: Fetch rules that are either global (1) or belong to this specific school
         const { results } = await env.DB.prepare(
-            `SELECT id, target, match_type, action, is_active FROM rules WHERE version_added > ? OR version_removed > ?`
-        ).bind(clientVersion, clientVersion).all();
+            `SELECT id, target, match_type, action, is_active FROM rules WHERE (version_added > ? OR version_removed > ?) AND school_id IN (1, ?)`
+        ).bind(clientVersion, clientVersion, schoolId).all();
 
         const added = results.filter(r => r.is_active === 1);
         const removed = results.filter(r => r.is_active === 0).map(r => r.id);
@@ -93,11 +101,14 @@ export async function handleFilterRequest(request, env, url) {
 
     // ROUTE: GET /api/filter/sync/full (Fallback for large gaps)
     if (request.method === "GET" && url.pathname === "/api/filter/sync/full") {
-        let fullState = await env.GLASSBOX_KV.get("master_rules", { type: "json" });
+        // 🎯 FIX: Read schoolId and fetch the school-specific master cache
+        const schoolId = parseInt(url.searchParams.get("schoolId")) || 1;
+        let fullState = await env.GLASSBOX_KV.get(`master_rules_${schoolId}`, { type: "json" });
         
         if (!fullState) {
             const state = await env.DB.prepare(`SELECT current_version FROM system_state WHERE id = 1`).first();
-            const { results } = await env.DB.prepare(`SELECT id, target, match_type, action FROM rules WHERE is_active = 1`).all();
+            // 🎯 FIX: Scope the fallback database query to this school and global
+            const { results } = await env.DB.prepare(`SELECT id, target, match_type, action FROM rules WHERE is_active = 1 AND school_id IN (1, ?)`).bind(schoolId).all();
             fullState = { version: state.current_version, rules: results };
         }
 
@@ -111,11 +122,15 @@ export async function handleFilterRequest(request, env, url) {
 // 🏛️ ADMIN-FACING FILTER ROUTES (Auth Handled by admin.js)
 // ------------------------------------------------------------------
 export async function handleAdminFilterRequest(request, env, ctx, url) {
+    // 🎯 FIX: Extract the scoped school_id and safe user ID from the authenticated user object
+    const adminSchoolId = request.user.school_id;
+    const auditUserId = request.user.id === 0 ? null : request.user.id; // Null for Master Backdoor
+
     // ROUTE: GET /api/admin/filter/requests (Admin UI viewing)
     if (request.method === "GET" && url.pathname === "/api/admin/filter/requests") {
         const { results } = await env.DB.prepare(
-            `SELECT id, student_hash, url, reason, created_at FROM unblock_requests WHERE status = 'pending' ORDER BY created_at DESC`
-        ).all();
+            `SELECT id, student_hash, url, reason, created_at FROM unblock_requests WHERE status = 'pending' AND school_id = ? ORDER BY created_at DESC`
+        ).bind(adminSchoolId).all();
         
         return Response.json(results, { headers: corsHeaders });
     }
@@ -128,13 +143,13 @@ export async function handleAdminFilterRequest(request, env, ctx, url) {
         const limit = parseInt(url.searchParams.get("limit")) || 10;
         const offset = (page - 1) * limit;
 
-        const countResult = await env.DB.prepare(`SELECT COUNT(*) as total FROM rules WHERE is_active = 1`).first();
+        const countResult = await env.DB.prepare(`SELECT COUNT(*) as total FROM rules WHERE is_active = 1 AND school_id = ?`).bind(adminSchoolId).first();
         const total = countResult ? countResult.total : 0;
 
-        // 🎯 FIX: Added expires_at to the SELECT query so the Admin UI can display it
+        // 🎯 FIX: Added expires_at to the SELECT query so the Admin UI can display it, scoped to school
         const { results } = await env.DB.prepare(
-            `SELECT id, target, match_type, action, version_added, expires_at FROM rules WHERE is_active = 1 ORDER BY id DESC LIMIT ? OFFSET ?`
-        ).bind(limit, offset).all();
+            `SELECT id, target, match_type, action, version_added, expires_at FROM rules WHERE is_active = 1 AND school_id = ? ORDER BY id DESC LIMIT ? OFFSET ?`
+        ).bind(adminSchoolId, limit, offset).all();
 
         return Response.json({ rules: results, total, page, limit }, { headers: corsHeaders });
     }
@@ -153,11 +168,19 @@ export async function handleAdminFilterRequest(request, env, ctx, url) {
 
         // Safely retire the rule by marking it inactive and setting the version_removed tracker
         await env.DB.prepare(
-            `UPDATE rules SET is_active = 0, version_removed = ? WHERE id = ? AND is_active = 1`
-        ).bind(state.current_version, ruleId).run();
+            `UPDATE rules SET is_active = 0, version_removed = ? WHERE id = ? AND is_active = 1 AND school_id = ?`
+        ).bind(state.current_version, ruleId, adminSchoolId).run();
 
         // ⚡ Rebuild KV Cache immediately so extensions sync the removal
-        await rebuildMasterRulesCache(env, ctx);
+        await rebuildMasterRulesCache(env, ctx, adminSchoolId);
+
+        // 📝 AUDIT LOGGING (Fire and Forget)
+        ctx.waitUntil((async () => {
+            const settingsResult = await env.DB.prepare(`SELECT setting_value FROM system_settings WHERE setting_key = 'enable_audit_logging'`).first();
+            if (settingsResult && settingsResult.setting_value === '1') {
+                await env.DB.prepare(`INSERT INTO audit_logs (user_id, action, target) VALUES (?, 'remove_rule', ?)`).bind(auditUserId, `rule_id_${ruleId}`).run();
+            }
+        })());
 
         return Response.json({ success: true, message: "Rule successfully retired." }, { headers: corsHeaders });
     }
@@ -180,26 +203,43 @@ export async function handleAdminFilterRequest(request, env, ctx, url) {
                 expiresAt = new Date(Date.now() + expiresInHours * 3600000).toISOString().replace('T', ' ').substring(0, 19);
             }
 
-            await env.DB.prepare(`UPDATE unblock_requests SET status = 'approved' WHERE id = ?`).bind(requestId).run();
+            await env.DB.prepare(`UPDATE unblock_requests SET status = 'approved' WHERE id = ? AND school_id = ?`).bind(requestId, adminSchoolId).run();
             await env.DB.prepare(`UPDATE system_state SET current_version = current_version + 1 WHERE id = 1`).run();
             
             const state = await env.DB.prepare(`SELECT current_version FROM system_state WHERE id = 1`).first();
             
             await env.DB.prepare(
-                `UPDATE rules SET is_active = 0, version_removed = ? WHERE target = ? AND is_active = 1`
-            ).bind(state.current_version, cleanTarget).run();
+                `UPDATE rules SET is_active = 0, version_removed = ? WHERE target = ? AND is_active = 1 AND school_id = ?`
+            ).bind(state.current_version, cleanTarget, adminSchoolId).run();
 
-            // 🎯 FIX: Insert the calculated expiresAt timestamp
+            // 🎯 FIX: Insert the calculated expiresAt timestamp and scoped school_id
             await env.DB.prepare(
-                `INSERT INTO rules (target, match_type, action, version_added, expires_at) VALUES (?, ?, 'allow', ?, ?)`
-            ).bind(cleanTarget, matchType, state.current_version, expiresAt).run();
+                `INSERT INTO rules (school_id, target, match_type, action, version_added, expires_at) VALUES (?, ?, ?, 'allow', ?, ?)`
+            ).bind(adminSchoolId, cleanTarget, matchType, state.current_version, expiresAt).run();
 
             // ⚡ Rebuild KV Cache
-            await rebuildMasterRulesCache(env, ctx);
+            await rebuildMasterRulesCache(env, ctx, adminSchoolId);
+
+            // 📝 AUDIT LOGGING (Fire and Forget)
+            ctx.waitUntil((async () => {
+                const settingsResult = await env.DB.prepare(`SELECT setting_value FROM system_settings WHERE setting_key = 'enable_audit_logging'`).first();
+                if (settingsResult && settingsResult.setting_value === '1') {
+                    await env.DB.prepare(`INSERT INTO audit_logs (user_id, action, target) VALUES (?, 'approve_request', ?)`).bind(auditUserId, cleanTarget).run();
+                }
+            })());
 
             return Response.json({ success: true, message: `Target ${cleanTarget} allowed.` }, { headers: corsHeaders });
         } else {
-            await env.DB.prepare(`UPDATE unblock_requests SET status = 'denied' WHERE id = ?`).bind(requestId).run();
+            await env.DB.prepare(`UPDATE unblock_requests SET status = 'denied' WHERE id = ? AND school_id = ?`).bind(requestId, adminSchoolId).run();
+            
+            // 📝 AUDIT LOGGING (Fire and Forget)
+            ctx.waitUntil((async () => {
+                const settingsResult = await env.DB.prepare(`SELECT setting_value FROM system_settings WHERE setting_key = 'enable_audit_logging'`).first();
+                if (settingsResult && settingsResult.setting_value === '1') {
+                    await env.DB.prepare(`INSERT INTO audit_logs (user_id, action, target) VALUES (?, 'deny_request', ?)`).bind(auditUserId, `request_id_${requestId}`).run();
+                }
+            })());
+
             return Response.json({ success: true, message: "Request denied." }, { headers: corsHeaders });
         }
     }
@@ -234,21 +274,32 @@ export async function handleAdminFilterRequest(request, env, ctx, url) {
 
         const retireStmts = blocksToProcess.map(b => 
             env.DB.prepare(
-                `UPDATE rules SET is_active = 0, version_removed = ? WHERE target = ? AND is_active = 1`
-            ).bind(state.current_version, b.target)
+                `UPDATE rules SET is_active = 0, version_removed = ? WHERE target = ? AND is_active = 1 AND school_id = ?`
+            ).bind(state.current_version, b.target, adminSchoolId)
         );
 
-        // 🎯 FIX: Bind expiresAt to the INSERT statement
+        // 🎯 FIX: Bind expiresAt and school_id to the INSERT statement
         const insertStmts = blocksToProcess.map(b => 
             env.DB.prepare(
-                `INSERT INTO rules (target, match_type, action, version_added, expires_at) VALUES (?, ?, 'block', ?, ?)`
-            ).bind(b.target, b.matchType, state.current_version, expiresAt)
+                `INSERT INTO rules (school_id, target, match_type, action, version_added, expires_at) VALUES (?, ?, ?, 'block', ?, ?)`
+            ).bind(adminSchoolId, b.target, b.matchType, state.current_version, expiresAt)
         );
 
         await env.DB.batch([...retireStmts, ...insertStmts]);
         
         // ⚡ Rebuild KV Cache
-        await rebuildMasterRulesCache(env, ctx);
+        await rebuildMasterRulesCache(env, ctx, adminSchoolId);
+
+        // 📝 AUDIT LOGGING (Fire and Forget)
+        ctx.waitUntil((async () => {
+            const settingsResult = await env.DB.prepare(`SELECT setting_value FROM system_settings WHERE setting_key = 'enable_audit_logging'`).first();
+            if (settingsResult && settingsResult.setting_value === '1') {
+                const auditStmts = blocksToProcess.map(b => 
+                    env.DB.prepare(`INSERT INTO audit_logs (user_id, action, target) VALUES (?, 'block_target', ?)`).bind(auditUserId, b.target)
+                );
+                await env.DB.batch(auditStmts);
+            }
+        })());
 
         return Response.json({ success: true, message: `Blocked ${blocksToProcess.length} targets.` }, { headers: corsHeaders });
     }

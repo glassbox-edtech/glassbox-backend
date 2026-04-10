@@ -63,14 +63,18 @@ export default {
                 await rebuildMasterRulesCache(env, ctx);
 
                 // ==========================================
-                // 🧹 3. Routine Cleanup (Delete Old Data)
+                // 🧹 3. Routine Cleanup & Compliance (Delete Old Data & Kill Idle Sessions)
                 // ==========================================
                 const state = await env.DB.prepare(`SELECT current_version FROM system_state WHERE id = 1`).first();
                 const cutoffVersion = Math.max(1, state.current_version - 50);
 
                 await env.DB.batch([
                     env.DB.prepare(`DELETE FROM rules WHERE is_active = 0 AND version_removed < ?`).bind(cutoffVersion),
-                    env.DB.prepare(`DELETE FROM unblock_requests WHERE status != 'pending' AND created_at < date('now', '-30 days')`)
+                    env.DB.prepare(`DELETE FROM unblock_requests WHERE status != 'pending' AND created_at < date('now', '-30 days')`),
+                    // 🎯 NEW: Purge 30-day old audit logs
+                    env.DB.prepare(`DELETE FROM audit_logs WHERE created_at < date('now', '-30 days')`),
+                    // 🎯 NEW: Invalidate session tokens for users inactive for over 1 hour
+                    env.DB.prepare(`UPDATE delegated_users SET token = NULL WHERE last_active_at < datetime('now', '-1 hour')`)
                 ]);
                 
                 console.log("✅ Cleanup complete.");
@@ -142,8 +146,10 @@ async function runMidnightRollup(env) {
         // ==========================================
         // 🗄️ QUERY CLOUDFLARE ANALYTICS
         // ==========================================
+        // 🎯 FIX: Extract blob5 AS school_id and add it to the GROUP BY clause
         const query = `
             SELECT 
+                blob5 AS school_id,
                 blob3 AS target, 
                 blob4 AS status, 
                 SUM(if(blob1 = 'time_log', double1, 0.0)) AS total_minutes, 
@@ -152,7 +158,7 @@ async function runMidnightRollup(env) {
             FROM glassbox_logs 
             WHERE timestamp >= toDateTime('${startSql}') 
               AND timestamp < toDateTime('${endSql}') 
-            GROUP BY target, status
+            GROUP BY school_id, target, status
         `;
 
         const cfApiUrl = `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID.trim()}/analytics_engine/sql`;
@@ -184,15 +190,19 @@ async function runMidnightRollup(env) {
         }).format(new Date(endTimestampUTC.getTime() - 7200000));
 
         const insertStmts = rows.map(row => {
+            // 🎯 FIX: Dynamically read the school_id from the Analytics Engine row (fallback to 1)
+            const schoolId = parseInt(row.school_id) || 1;
+
             return env.TELEMETRY_DB.prepare(`
-                INSERT INTO daily_rollups (log_date, target, status, total_minutes, total_hits, unique_students)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(log_date, target, status) 
+                INSERT INTO daily_rollups (school_id, log_date, target, status, total_minutes, total_hits, unique_students)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(school_id, log_date, target, status) 
                 DO UPDATE SET 
                     total_minutes = excluded.total_minutes,
                     total_hits = excluded.total_hits,
                     unique_students = excluded.unique_students
             `).bind(
+                schoolId,
                 yesterdayStr,
                 row.target,
                 row.status,
