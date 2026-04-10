@@ -1,8 +1,24 @@
 import { handleFilterRequest } from './api/filter.js';
 import { handleAdminRequest } from './api/admin.js';
 import { handleInsightRequest } from './api/insight.js';
+import { handleAuthRequest } from './api/auth.js';
+import { handleStudentRequest } from './api/student.js';
 
 export async function handleApiRequest(request, env, ctx, url) {
+    // ---------------------------------------------------------
+    // 🔑 ROUTE: Authentication (Login / Logout)
+    // ---------------------------------------------------------
+    if (url.pathname.startsWith("/api/auth/")) {
+        return await handleAuthRequest(request, env, ctx, url);
+    }
+
+    // ---------------------------------------------------------
+    // 🎓 ROUTE: Student Onboarding & Schools
+    // ---------------------------------------------------------
+    if (url.pathname.startsWith("/api/student/") || url.pathname.startsWith("/api/schools/")) {
+        return await handleStudentRequest(request, env, url);
+    }
+
     // ---------------------------------------------------------
     // 🏛️ ROUTE: IT Admin Dashboard
     // ---------------------------------------------------------
