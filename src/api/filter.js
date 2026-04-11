@@ -11,7 +11,7 @@ export async function handleFilterRequest(request, env, url) {
         const body = await request.json();
         const { studentHash, url: reqUrl, reason } = body;
 
-        if (!reqUrl || typeof reqUrl !== 'string' || reqUrl.length > 2048) return jsonError("URL invalid or too long (max 500 chars).", 400);
+        if (!reqUrl || typeof reqUrl !== 'string' || reqUrl.length > 2048) return jsonError("URL invalid or too long (max 2048 chars).", 400);
         if (!reason || typeof reason !== 'string' || reason.length > 1000) return jsonError("Reason invalid or too long (max 1000 chars).", 400);
         if (!studentHash || typeof studentHash !== 'string' || studentHash.length > 100) return jsonError("Invalid identity hash.", 400);
 
