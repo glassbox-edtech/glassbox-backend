@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS delegated_users (
     role TEXT NOT NULL, -- 'teacher', 'school_admin', 'master_admin'
     username TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
+    salt TEXT NOT NULL, -- 🎯 ADDED: Cryptographic salt for PBKDF2 key derivation
     token TEXT, -- For active session Bearer auth
     last_active_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- 🎯 ADDED: Tracks idle sessions for auto-logout
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

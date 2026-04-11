@@ -1,12 +1,36 @@
 import { corsHeaders, jsonError } from '../utils/helpers.js';
 
-// Native WebCrypto SHA-256 Hashing for Passwords (matches auth.js)
-async function hashPassword(password) {
+// ---------------------------------------------------------
+// 🔐 CRYPTO HELPERS (SERVER-SIDE)
+// ---------------------------------------------------------
+function hexToBuffer(hex) {
+    const view = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < hex.length; i += 2) {
+        view[i / 2] = parseInt(hex.substring(i, i + 2), 16);
+    }
+    return view.buffer;
+}
+
+function bufferToHex(buffer) {
+    return Array.from(new Uint8Array(buffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function sha256(message) {
     const encoder = new TextEncoder();
-    const data = encoder.encode(password);
-    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    const hash = await crypto.subtle.digest('SHA-256', encoder.encode(message));
+    return bufferToHex(hash);
+}
+
+async function computePBKDF2(passwordHex, saltStr) {
+    const baseKey = await crypto.subtle.importKey(
+        'raw', hexToBuffer(passwordHex), { name: 'PBKDF2' }, false, ['deriveBits']
+    );
+    const encoder = new TextEncoder();
+    const derivedBits = await crypto.subtle.deriveBits(
+        { name: 'PBKDF2', salt: encoder.encode(saltStr), iterations: 100000, hash: 'SHA-256' },
+        baseKey, 256
+    );
+    return bufferToHex(derivedBits);
 }
 
 export async function handleAdminUsersRequest(request, env, ctx, url) {
@@ -66,12 +90,18 @@ export async function handleAdminUsersRequest(request, env, ctx, url) {
                     if (role === 'master_admin') return jsonError("Only Master Admins can create other Master Admins.", 403);
                 }
 
-                const hashedPassword = await hashPassword(password);
+                // 🎯 NEW: Generate unique salt and derive PBKDF2 key
+                const saltBytes = new Uint8Array(16);
+                crypto.getRandomValues(saltBytes);
+                const saltStr = bufferToHex(saltBytes);
+
+                const baseHash = await sha256(password);
+                const derivedKey = await computePBKDF2(baseHash, saltStr);
 
                 try {
                     await env.DB.prepare(
-                        `INSERT INTO delegated_users (school_id, role, username, password_hash) VALUES (?, ?, ?, ?)`
-                    ).bind(targetSchoolId, role, username, hashedPassword).run();
+                        `INSERT INTO delegated_users (school_id, role, username, password_hash, salt) VALUES (?, ?, ?, ?, ?)`
+                    ).bind(targetSchoolId, role, username, derivedKey, saltStr).run();
                     
                     return Response.json({ success: true, message: `User '${username}' created.` }, { headers: corsHeaders });
                 } catch (dbErr) {
@@ -105,10 +135,16 @@ export async function handleAdminUsersRequest(request, env, ctx, url) {
                     }
                 }
 
-                const hashedPassword = await hashPassword(password);
+                // 🎯 NEW: Generate new salt and derive new PBKDF2 key on password reset
+                const saltBytes = new Uint8Array(16);
+                crypto.getRandomValues(saltBytes);
+                const saltStr = bufferToHex(saltBytes);
+
+                const baseHash = await sha256(password);
+                const derivedKey = await computePBKDF2(baseHash, saltStr);
                 
-                // Update the password AND force a logout by destroying the session token
-                await env.DB.prepare(`UPDATE delegated_users SET password_hash = ?, token = NULL WHERE id = ?`).bind(hashedPassword, id).run();
+                // Update the password, salt AND force a logout by destroying the session token
+                await env.DB.prepare(`UPDATE delegated_users SET password_hash = ?, salt = ?, token = NULL WHERE id = ?`).bind(derivedKey, saltStr, id).run();
                 return Response.json({ success: true, message: "Password updated and active sessions terminated." }, { headers: corsHeaders });
             }
 
